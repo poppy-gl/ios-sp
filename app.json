@@ -1,0 +1,32 @@
+{
+  "expo": {
+    "name": "IOS Video App",
+    "slug": "ios-video-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "iosvideoapp",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.example.iosvideoapp",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "package": "com.example.iosvideoapp"
+    },
+    "plugins": ["expo-router", "expo-video"],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "extra": {
+      "apiBaseUrl": "",
+      "apiToken": "",
+      "router": {},
+      "eas": {
+        "projectId": "b45618f7-e6a8-4d09-a082-a0e3d7c1642a"
+      }
+    }
+  }
+}
