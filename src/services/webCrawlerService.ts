@@ -5,6 +5,7 @@ import type {
   VideoPlayLine,
   VideoSourceType,
 } from '@/types/video';
+import { CONTENT_PREFERENCE_POLICY } from '@/domain/ranking/contentPreferencePolicy';
 import {
   clearCrawlerDiscoveredPages,
   loadCrawlerDiscoveredPages,
@@ -158,68 +159,104 @@ export const AUTHORIZED_WEB_PAGE_SOURCES: AuthorizedWebPageSourceConfig[] = [
     maxNavigationPages: 420,
     maxVideos: 420,
     seedPaths: [
-      { path: '/type/hanju.html', priority: 100, rawCategory: '\u97e9\u5267' },
-      { path: '/type/hanju-2.html', priority: 95, rawCategory: '\u97e9\u5267' },
+      {
+        path: '/type/hanju.html',
+        priority: CONTENT_PREFERENCE_POLICY.seedPriority.koreanDrama,
+        rawCategory: '\u97e9\u5267',
+      },
+      {
+        path: '/type/hanju-2.html',
+        priority: CONTENT_PREFERENCE_POLICY.seedPriority.koreanDramaPage2,
+        rawCategory: '\u97e9\u5267',
+      },
       {
         path: '/type/tv.html',
-        priority: 80,
+        priority: CONTENT_PREFERENCE_POLICY.seedPriority.tvDrama,
         rawCategory: '\u7535\u89c6\u5267',
       },
-      { path: '/type/rihan.html', priority: 70, rawCategory: '\u65e5\u5267' },
+      {
+        path: '/type/rihan.html',
+        priority: CONTENT_PREFERENCE_POLICY.seedPriority.japaneseDrama,
+        rawCategory: '\u65e5\u5267',
+      },
       {
         path: '/type/meiju.html',
-        priority: 60,
+        priority: CONTENT_PREFERENCE_POLICY.seedPriority.westernDrama,
         rawCategory: '\u6b27\u7f8e\u5267',
       },
       {
         path: '/type/gangju.html',
-        priority: 55,
+        priority: CONTENT_PREFERENCE_POLICY.seedPriority.gangtaiDrama,
         rawCategory: '\u6e2f\u53f0\u5267',
       },
       {
         path: '/type/guoju.html',
-        priority: 50,
+        priority: CONTENT_PREFERENCE_POLICY.seedPriority.chineseDrama,
         rawCategory: '\u56fd\u4ea7\u5267',
       },
       {
         path: '/type/dianying.html',
-        priority: 35,
+        priority: CONTENT_PREFERENCE_POLICY.seedPriority.movie,
         rawCategory: '\u7535\u5f71',
       },
-      { path: '/type/zongyi.html', priority: 30, rawCategory: '\u7efc\u827a' },
-      { path: '/type/dongman.html', priority: 25, rawCategory: '\u52a8\u6f2b' },
-      { path: '/', priority: 10 },
+      {
+        path: '/type/zongyi.html',
+        priority: CONTENT_PREFERENCE_POLICY.seedPriority.variety,
+        rawCategory: '\u7efc\u827a',
+      },
+      {
+        path: '/type/dongman.html',
+        priority: CONTENT_PREFERENCE_POLICY.seedPriority.anime,
+        rawCategory: '\u52a8\u6f2b',
+      },
+      { path: '/', priority: CONTENT_PREFERENCE_POLICY.seedPriority.fallbackHome },
     ],
     priorityPathPatterns: [
-      { pattern: /\/type\/hanju\b/i, score: 1000, rawCategory: '\u97e9\u5267' },
+      {
+        pattern: /\/type\/hanju\b/i,
+        score: CONTENT_PREFERENCE_POLICY.crawlerPathBoosts.koreanDrama,
+        rawCategory: '\u97e9\u5267',
+      },
       {
         pattern: /\/type\/tv\b/i,
-        score: 500,
+        score: CONTENT_PREFERENCE_POLICY.crawlerPathBoosts.tvDrama,
         rawCategory: '\u7535\u89c6\u5267',
       },
-      { pattern: /\/type\/rihan\b/i, score: 380, rawCategory: '\u65e5\u5267' },
+      {
+        pattern: /\/type\/rihan\b/i,
+        score: CONTENT_PREFERENCE_POLICY.crawlerPathBoosts.japaneseDrama,
+        rawCategory: '\u65e5\u5267',
+      },
       {
         pattern: /\/type\/meiju\b/i,
-        score: 280,
+        score: CONTENT_PREFERENCE_POLICY.crawlerPathBoosts.westernDrama,
         rawCategory: '\u6b27\u7f8e\u5267',
       },
       {
         pattern: /\/type\/gangju\b/i,
-        score: 260,
+        score: CONTENT_PREFERENCE_POLICY.crawlerPathBoosts.gangtaiDrama,
         rawCategory: '\u6e2f\u53f0\u5267',
       },
       {
         pattern: /\/type\/guoju\b/i,
-        score: 240,
+        score: CONTENT_PREFERENCE_POLICY.crawlerPathBoosts.chineseDrama,
         rawCategory: '\u56fd\u4ea7\u5267',
       },
       {
         pattern: /\/type\/dianying\b/i,
-        score: 120,
+        score: CONTENT_PREFERENCE_POLICY.crawlerPathBoosts.movie,
         rawCategory: '\u7535\u5f71',
       },
-      { pattern: /\/type\/zongyi\b/i, score: 80, rawCategory: '\u7efc\u827a' },
-      { pattern: /\/type\/dongman\b/i, score: 60, rawCategory: '\u52a8\u6f2b' },
+      {
+        pattern: /\/type\/zongyi\b/i,
+        score: CONTENT_PREFERENCE_POLICY.crawlerPathBoosts.variety,
+        rawCategory: '\u7efc\u827a',
+      },
+      {
+        pattern: /\/type\/dongman\b/i,
+        score: CONTENT_PREFERENCE_POLICY.crawlerPathBoosts.anime,
+        rawCategory: '\u52a8\u6f2b',
+      },
     ],
   },
   {

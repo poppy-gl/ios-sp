@@ -4,3 +4,8 @@ dist
 package-lock.json
 expo-start.log
 expo-start-ci.log
+video-backend/video-backend/src/generated/
+video-backend/video-backend/**/*.js
+video-backend/video-backend/**/*.js.map
+video-backend/video-backend/**/*.d.ts
+video-backend/video-backend/**/*.d.ts.map

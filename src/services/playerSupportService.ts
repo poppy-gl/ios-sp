@@ -1,4 +1,5 @@
 import { detectVideoFormat, type FormatDetectionInput } from '@/services/formatDetector';
+import { getNativeVideoEngine } from '@/infra/player/playerEngineSelector';
 import type { VideoCodec, VideoFormat, VideoItem } from '@/types/video';
 
 export type PlayerEngine = 'expo-video' | 'expo-av';
@@ -37,7 +38,8 @@ export type RemoteMediaProbeRequest = {
   sourceUri: string;
 };
 
-const CURRENT_ENGINE: PlayerEngine = 'expo-av';
+const getCurrentEngine = (): PlayerEngine =>
+  getNativeVideoEngine() === 'expo-video' ? 'expo-video' : 'expo-av';
 const unsupportedReasonText: Record<UnsupportedReasonCode, string> = {
   drm: '\u8be5\u89c6\u9891\u6807\u8bb0\u4e3a DRM \u5185\u5bb9\uff0cApp \u5185\u64ad\u653e\u5df2\u4fdd\u5b88\u7981\u7528',
   'forced-unplayable':
@@ -78,7 +80,7 @@ const unsupported = (
 ): PlayerSupportDecision => ({
   canPlayInApp: false,
   codec: detected.codec,
-  engine: CURRENT_ENGINE,
+  engine: getCurrentEngine(),
   format: detected.format,
   mimeType: detected.mimeType,
   needsFallback: true,
@@ -95,7 +97,7 @@ const supported = (
 ): PlayerSupportDecision => ({
   canPlayInApp: true,
   codec: detected.codec,
-  engine: CURRENT_ENGINE,
+  engine: getCurrentEngine(),
   format: detected.format,
   mimeType: detected.mimeType,
   needsFallback,

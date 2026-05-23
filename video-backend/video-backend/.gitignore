@@ -1,0 +1,15 @@
+node_modules
+# Keep environment variables out of version control
+.env
+
+/src/generated/prisma
+data/*.db
+data/*.db-*
+
+# TypeScript currently emits next to source because this backend has no outDir.
+# Keep generated build artifacts out of the app repository; deploy servers can rebuild them.
+*.js
+*.js.map
+*.d.ts
+*.d.ts.map
+*.tsbuildinfo

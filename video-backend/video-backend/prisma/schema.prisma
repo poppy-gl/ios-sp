@@ -1,0 +1,24 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model Video {
+  id          String   @id
+  title       String
+  description String?
+  cover       String?
+  source      String
+  sourceType  String
+  category    String
+  subCategory String?
+  provider    String?
+  seriesId    String?
+  rawJson     String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}

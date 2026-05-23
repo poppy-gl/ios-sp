@@ -21,7 +21,7 @@
       "typedRoutes": true
     },
     "extra": {
-      "apiBaseUrl": "",
+      "apiBaseUrl": "https://shipin.laig.top",
       "apiToken": "",
       "router": {},
       "eas": {

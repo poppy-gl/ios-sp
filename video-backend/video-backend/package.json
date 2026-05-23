@@ -1,0 +1,37 @@
+{
+  "name": "video-backend",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "prisma:push": "prisma db push",
+    "start": "node src/server.js",
+    "build": "tsc",
+    "dev": "tsx watch src/server.ts",
+    "crawl": "tsx src/jobs/crawlJob.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^25.9.1",
+    "tsx": "^4.22.3",
+    "typescript": "^6.0.3"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.2.0",
+    "@fastify/rate-limit": "^10.3.0",
+    "@prisma/adapter-better-sqlite3": "^7.8.0",
+    "@prisma/client": "^7.8.0",
+    "better-sqlite3": "^12.10.0",
+    "cheerio": "^1.2.0",
+    "dotenv": "^17.4.2",
+    "fastify": "^5.8.5",
+    "node-cron": "^4.2.1",
+    "prisma": "^7.8.0",
+    "zod": "^4.4.3"
+  }
+}

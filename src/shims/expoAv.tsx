@@ -130,7 +130,17 @@ const loadExpoAvModule = (): ExpoAvModule | null => {
 const expoVideoModule = loadExpoVideoModule();
 const expoAvModule = expoVideoModule ? null : loadExpoAvModule();
 
-export const isNativeVideoAvailable = Boolean(expoVideoModule) || Boolean(expoAvModule);
+export type NativeVideoEngine = 'expo-av' | 'expo-video' | 'none';
+
+export const nativeVideoEngine: NativeVideoEngine = expoVideoModule
+  ? 'expo-video'
+  : expoAvModule
+    ? 'expo-av'
+    : 'none';
+
+export const getNativeVideoEngine = () => nativeVideoEngine;
+
+export const isNativeVideoAvailable = nativeVideoEngine !== 'none';
 
 const ExpoVideoBridge = forwardRef<VideoHandle, VideoProps>(
   (

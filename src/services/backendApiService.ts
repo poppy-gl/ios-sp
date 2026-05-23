@@ -1,6 +1,21 @@
 import Constants from 'expo-constants';
 
-import type { VideoFormat, VideoItem, VideoSourceType } from '@/types/video';
+import type {
+  BackendEpisodeDTO,
+  BackendPlayLineDTO,
+  BackendResolveResponse,
+  BackendVideoDTO,
+} from '@/domain/video/backendTypes';
+import { mapCategoryToAppCategory } from '@/services/categoryService';
+import { detectVideoFormat } from '@/services/formatDetector';
+import type {
+  VideoFormat,
+  VideoItem,
+  VideoCodec,
+  VideoPlaybackOption,
+  VideoPlayLine,
+  VideoSourceType,
+} from '@/types/video';
 
 type BackendApiConfig = {
   baseUrl?: string;
@@ -44,6 +59,63 @@ export class BackendApiError extends Error {
 }
 
 const DEFAULT_API_TIMEOUT_MS = 15_000;
+const validSourceTypes = new Set<VideoSourceType>([
+  'mp4',
+  'm3u8',
+  'hls',
+  'dash',
+  'mov',
+  'm4v',
+  'mkv',
+  'webm',
+  'avi',
+  'flv',
+  'ts',
+  'mpeg',
+  'mpg',
+  '3gp',
+  'rmvb',
+  'mp3',
+  'aac',
+  'wav',
+  'm4a',
+  'unknown',
+  'webview',
+  'unsupported',
+]);
+const directSourceTypes = new Set<VideoSourceType>(['mp4', 'm3u8', 'hls', 'mov', 'm4v']);
+const validFormats = new Set<VideoFormat>([
+  'mp4',
+  'm3u8',
+  'hls',
+  'dash',
+  'mov',
+  'm4v',
+  'mkv',
+  'webm',
+  'avi',
+  'flv',
+  'ts',
+  'mpeg',
+  'mpg',
+  '3gp',
+  'rmvb',
+  'mp3',
+  'aac',
+  'wav',
+  'm4a',
+  'unknown',
+]);
+const validCodecs = new Set<VideoCodec>([
+  'h264',
+  'h265',
+  'hevc',
+  'vp8',
+  'vp9',
+  'av1',
+  'aac',
+  'unknown',
+]);
 
 const getEnv = (key: string): string | undefined => {
   if (typeof process === 'undefined') {
@@ -188,27 +260,340 @@ const extractItems = (payload: unknown): unknown[] => {
   return Array.isArray(items) ? items : [];
 };
 
-const isVideoItemLike = (item: unknown): item is VideoItem => {
+const hasPlayableBackendInfo = (record: Partial<BackendVideoDTO>) =>
+  Boolean(
+    normalizeOptionalString(record.source) ||
+    normalizeOptionalString(record.webViewUrl) ||
+    normalizeOptionalString(record.playPageUrl) ||
+    (Array.isArray(record.playLines) && record.playLines.length > 0) ||
+    (Array.isArray(record.playbackOptions) && record.playbackOptions.length > 0),
+  );
+
+const isBackendVideoDTOLike = (item: unknown): item is BackendVideoDTO => {
   if (!item || typeof item !== 'object') {
     return false;
   }
 
-  const record = item as Partial<VideoItem>;
+  const record = item as Partial<BackendVideoDTO>;
+
+  return typeof record.id === 'string' && typeof record.title === 'string';
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === 'object';
+
+const normalizeSourceType = (
+  value: unknown,
+  fallbackUri?: string,
+  fallbackFormat?: VideoFormat,
+): VideoSourceType => {
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+
+    if (validSourceTypes.has(normalized as VideoSourceType)) {
+      return normalized as VideoSourceType;
+    }
+  }
+
+  const detected = detectVideoFormat({
+    format: fallbackFormat,
+    uri: fallbackUri,
+  });
+
+  if (detected.format !== 'unknown') {
+    return detected.format === 'm3u8' ? 'm3u8' : detected.format;
+  }
+
+  return 'unsupported';
+};
+
+const normalizeFormat = (value: unknown, fallbackUri?: string): VideoFormat | undefined => {
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+
+    if (validFormats.has(normalized as VideoFormat)) {
+      return normalized as VideoFormat;
+    }
+  }
+
+  const detected = detectVideoFormat({
+    uri: fallbackUri,
+  });
+
+  return detected.format !== 'unknown' ? detected.format : undefined;
+};
+
+const normalizeCodec = (value: unknown): VideoCodec | undefined => {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+
+  const normalized = value.trim().toLowerCase();
+
+  return validCodecs.has(normalized as VideoCodec) ? (normalized as VideoCodec) : undefined;
+};
+
+const normalizePlaybackOptions = (value: unknown): VideoPlaybackOption[] =>
+  Array.isArray(value)
+    ? value.flatMap((option) => {
+        if (!isRecord(option) || typeof option.uri !== 'string' || !option.uri.trim()) {
+          return [];
+        }
+
+        const format = normalizeFormat(option.format, option.uri);
+        const sourceType = normalizeSourceType(option.sourceType, option.uri, format);
+
+        return [
+          {
+            codec: typeof option.codec === 'string' ? (option.codec as VideoCodec) : undefined,
+            format,
+            label: typeof option.label === 'string' ? option.label : undefined,
+            mimeType: typeof option.mimeType === 'string' ? option.mimeType : undefined,
+            playableInApp:
+              typeof option.playableInApp === 'boolean'
+                ? option.playableInApp
+                : directSourceTypes.has(sourceType),
+            sourceType,
+            unsupportedReason:
+              typeof option.unsupportedReason === 'string' ? option.unsupportedReason : undefined,
+            uri: option.uri.trim(),
+          },
+        ];
+      })
+    : [];
+
+const normalizePlayLines = (
+  value: BackendPlayLineDTO[] | undefined,
+): VideoPlayLine[] | undefined => {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  const lines = value.flatMap((line): VideoPlayLine[] => {
+    if (!isRecord(line) || !Array.isArray(line.episodes)) {
+      return [];
+    }
+
+    const lineNumber = Number(line.line);
+    const episodes = line.episodes.flatMap((episode: BackendEpisodeDTO) => {
+      if (!isRecord(episode)) {
+        return [];
+      }
+
+      const episodeNumber = Number(episode.episode);
+      const playPageUrl = typeof episode.playPageUrl === 'string' ? episode.playPageUrl.trim() : '';
+      const mediaUrl = typeof episode.mediaUrl === 'string' ? episode.mediaUrl.trim() : undefined;
+      const label = normalizeOptionalString(episode.episodeLabel ?? episode.label);
+
+      if (!Number.isFinite(episodeNumber) || (!playPageUrl && !mediaUrl)) {
+        return [];
+      }
+
+      const format = normalizeFormat(episode.format, mediaUrl ?? playPageUrl);
+
+      return [
+        {
+          episode: episodeNumber,
+          episodeLabel: label,
+          format,
+          mediaUrl,
+          playPageUrl: playPageUrl || mediaUrl || '',
+          sourceType: normalizeSourceType(episode.sourceType, mediaUrl ?? playPageUrl, format),
+        },
+      ];
+    });
+
+    if (!Number.isFinite(lineNumber) || episodes.length === 0) {
+      return [];
+    }
+
+    return [
+      {
+        episodes,
+        label: typeof line.label === 'string' ? line.label : `线路 ${lineNumber}`,
+        line: lineNumber,
+      },
+    ];
+  });
+
+  return lines.length > 0 ? lines : undefined;
+};
+
+const buildLazyPlayLines = (record: BackendVideoDTO): VideoPlayLine[] | undefined => {
+  const lazyPlayPageUrl =
+    normalizeOptionalString(record.playPageUrl) ||
+    normalizeOptionalString(record.webViewUrl) ||
+    normalizeOptionalString(record.source);
+
+  if (!lazyPlayPageUrl) {
+    return undefined;
+  }
+
+  const format = normalizeFormat(record.format, lazyPlayPageUrl);
+  const mediaUrl = directSourceTypes.has(
+    normalizeSourceType(record.sourceType, lazyPlayPageUrl, format),
+  )
+    ? lazyPlayPageUrl
+    : undefined;
+
+  return [
+    {
+      episodes: [
+        {
+          episode: 1,
+          episodeLabel: '第 1 集',
+          format,
+          mediaUrl,
+          playPageUrl: lazyPlayPageUrl,
+          sourceType: normalizeSourceType(record.sourceType, mediaUrl ?? lazyPlayPageUrl, format),
+        },
+      ],
+      label: '默认线路',
+      line: 1,
+    },
+  ];
+};
+
+const inferPlayableInApp = (
+  item: Partial<VideoItem>,
+  sourceType: VideoSourceType,
+  playLines?: VideoPlayLine[],
+  playbackOptions?: VideoPlaybackOption[],
+) => {
+  if (playbackOptions?.some((option) => option.playableInApp)) {
+    return true;
+  }
+
+  if (playLines?.some((line) => line.episodes.some((episode) => Boolean(episode.mediaUrl)))) {
+    return true;
+  }
+
+  if (directSourceTypes.has(sourceType)) {
+    return item.playableInApp !== false;
+  }
+
+  return false;
+};
+
+const findFirstEpisodeSource = (playLines?: VideoPlayLine[]) =>
+  playLines
+    ?.flatMap((line) => line.episodes)
+    .find((episode) => episode.mediaUrl || episode.playPageUrl);
+
+const findFirstPlaybackOptionSource = (playbackOptions: VideoPlaybackOption[]) =>
+  playbackOptions.find((option) => option.uri.trim());
+
+const getInitialSource = (
+  record: BackendVideoDTO,
+  playLines?: VideoPlayLine[],
+  playbackOptions: VideoPlaybackOption[] = [],
+) => {
+  const source = normalizeOptionalString(record.source);
+
+  if (source) {
+    return source;
+  }
+
+  const episode = findFirstEpisodeSource(playLines);
 
   return (
-    typeof record.id === 'string' &&
-    typeof record.title === 'string' &&
-    typeof record.source === 'string'
+    episode?.mediaUrl ||
+    episode?.playPageUrl ||
+    findFirstPlaybackOptionSource(playbackOptions)?.uri ||
+    normalizeOptionalString(record.webViewUrl) ||
+    normalizeOptionalString(record.playPageUrl) ||
+    `backend-lazy://${record.id}`
   );
+};
+
+export const normalizeBackendVideoDTO = (item: unknown): VideoItem | undefined => {
+  if (!isBackendVideoDTOLike(item)) {
+    return undefined;
+  }
+
+  const record = item;
+  const playbackOptions = normalizePlaybackOptions(record.playbackOptions);
+  const playLines = normalizePlayLines(record.playLines) ?? buildLazyPlayLines(record);
+  const source = getInitialSource(record, playLines, playbackOptions);
+  const format = normalizeFormat(record.format, source);
+  const sourceType = normalizeSourceType(record.sourceType, source, format);
+  const hasPlaybackInfo = hasPlayableBackendInfo(record);
+  const hasLazyResolveInfo = Boolean(
+    normalizeOptionalString(record.playPageUrl) ||
+    normalizeOptionalString(record.webViewUrl) ||
+    playLines?.some((line) => line.episodes.some((episode) => episode.playPageUrl)),
+  );
+  const playableInApp = inferPlayableInApp(
+    {
+      source,
+    },
+    sourceType,
+    playLines,
+    playbackOptions,
+  );
+  const incomingCategory = String(record.category ?? record.rawCategory ?? '');
+  const category = mapCategoryToAppCategory(incomingCategory);
+  const rawCategory =
+    record.rawCategory ??
+    (incomingCategory && incomingCategory !== String(category) ? incomingCategory : undefined);
+  const subCategory =
+    typeof record.subCategory === 'string' && record.subCategory.trim()
+      ? record.subCategory.trim()
+      : rawCategory && rawCategory !== String(category)
+        ? rawCategory
+        : undefined;
+  const unsupportedReason =
+    record.unsupportedReason ??
+    (hasPlaybackInfo
+      ? hasLazyResolveInfo
+        ? '需要通过后端 /api/resolve 懒解析播放地址'
+        : '当前来源暂无可直接播放的媒体地址'
+      : 'missing-playback-info');
+
+  if (!hasPlaybackInfo) {
+    console.warn('[backendApiService] backend video missing playback info', {
+      id: record.id,
+      title: record.title,
+    });
+  }
+
+  return {
+    ...record,
+    codec: normalizeCodec(record.codec),
+    id: record.id,
+    title: record.title,
+    source,
+    category,
+    rawCategory,
+    subCategory,
+    format,
+    playableInApp,
+    playback: playableInApp
+      ? record.playback?.type === 'direct'
+        ? record.playback
+        : {
+            type: 'direct',
+            uri:
+              findFirstPlaybackOptionSource(playbackOptions)?.uri ??
+              findFirstEpisodeSource(playLines)?.mediaUrl ??
+              source,
+            format,
+          }
+      : {
+          type: 'unplayable',
+          reason: unsupportedReason,
+        },
+    playbackOptions: playbackOptions.length > 0 ? playbackOptions : undefined,
+    playLines,
+    sourceType,
+    unsupportedReason: playableInApp ? undefined : unsupportedReason,
+  };
 };
 
 const parseVideoItems = (payload: unknown): VideoItem[] =>
   extractItems(payload)
-    .filter(isVideoItemLike)
-    .map((item) => ({
-      ...item,
-      playableInApp: Boolean(item.playableInApp),
-    }));
+    .map(normalizeBackendVideoDTO)
+    .filter((item): item is VideoItem => Boolean(item));
 
 const parseVideoItem = (payload: unknown): VideoItem | undefined => {
   const value =
@@ -216,9 +601,7 @@ const parseVideoItem = (payload: unknown): VideoItem | undefined => {
       ? (payload as { item?: unknown }).item
       : payload;
 
-  return isVideoItemLike(value)
-    ? { ...value, playableInApp: Boolean(value.playableInApp) }
-    : undefined;
+  return normalizeBackendVideoDTO(value);
 };
 
 export const fetchBackendVideos = async (
@@ -280,16 +663,25 @@ export const resolveBackendEpisodeMedia = async (
     throw new BackendApiError('Backend resolve response is empty.');
   }
 
-  const record = result as Partial<BackendEpisodeResolution>;
+  const record = result as BackendResolveResponse;
 
   if (typeof record.mediaUrl !== 'string' || record.mediaUrl.trim().length === 0) {
     throw new BackendApiError('Backend resolve response does not include mediaUrl.');
   }
 
+  const mediaUrl = record.mediaUrl.trim();
+  const format = normalizeFormat(record.format, mediaUrl);
+  const sourceType = normalizeSourceType(record.sourceType, mediaUrl, format);
+  const detected = detectVideoFormat({
+    format,
+    sourceType,
+    uri: mediaUrl,
+  });
+
   return {
-    format: record.format,
-    mediaUrl: record.mediaUrl,
+    format: format ?? detected.format,
+    mediaUrl,
     reachable: record.reachable,
-    sourceType: record.sourceType,
+    sourceType: normalizeSourceType(sourceType, mediaUrl, format ?? detected.format),
   };
 };

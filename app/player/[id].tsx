@@ -2,10 +2,11 @@ import { Ionicons } from '@expo/vector-icons';
 import {
   ResizeMode,
   Video,
+  getNativeVideoEngine,
   isNativeVideoAvailable,
   type AVPlaybackStatus,
   type VideoHandle,
-} from '@/shims/expoAv';
+} from '@/infra/player/playerEngineSelector';
 import { Stack, router, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -13,7 +14,6 @@ import {
   GestureResponderEvent,
   Image,
   LayoutChangeEvent,
-  Linking,
   Pressable,
   ScrollView,
   Share,
@@ -31,6 +31,8 @@ import Animated, {
 } from '@/shims/reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { DEFAULT_CONTENT_PREFERENCE_POLICY } from '@/domain/recommendation/contentPreferencePolicy';
+import { rankVideos } from '@/domain/recommendation/rankVideos';
 import { evaluatePlayerSupport, type SupportLevel } from '@/services/playerSupportService';
 import {
   getAllVideos,
@@ -96,6 +98,8 @@ const text = {
   noRelated: '\u6682\u65e0\u76f8\u5173\u63a8\u8350',
   play: '\u64ad\u653e',
   playFailed: '\u64ad\u653e\u5931\u8d25',
+  playFailedTryOtherLine:
+    '\u89e3\u6790\u5931\u8d25\uff0c\u8bf7\u5c1d\u8bd5\u5176\u4ed6\u6765\u6e90\u6216\u7ebf\u8def',
   publishedAt: '\u53d1\u5e03\u4e8e',
   related: '\u76f8\u5173\u63a8\u8350',
   replay: '\u91cd\u64ad',
@@ -103,9 +107,7 @@ const text = {
   shareFailed: '\u5206\u4eab\u5931\u8d25',
   sourceEmpty: '\u89c6\u9891\u5730\u5740\u4e3a\u7a7a',
   unsupportedPlaybackHint:
-    '\u8be5\u6765\u6e90\u6682\u65e0 App \u53ef\u76f4\u63a5\u64ad\u653e\u7684\u5a92\u4f53\u5730\u5740\u6216\u683c\u5f0f\u4e0d\u517c\u5bb9\u3002',
-  openInBrowser: '\u7528\u5916\u90e8\u64ad\u653e\u5668\u6253\u5f00',
-  openExternalUnavailable: '\u672a\u63d0\u4f9b\u53ef\u6253\u5f00\u7684\u7f51\u9875\u5730\u5740',
+    '\u8be5\u6765\u6e90\u6682\u65e0 App \u53ef\u76f4\u63a5\u64ad\u653e\u7684\u5a92\u4f53\u5730\u5740\u6216\u683c\u5f0f\u4e0d\u517c\u5bb9\u3002\u4e0d\u4f1a\u6253\u5f00\u7f51\u9875\uff0c\u8bf7\u5207\u6362\u7ebf\u8def\u6216\u7a0d\u540e\u91cd\u8bd5\u89e3\u6790\u3002',
   tags: '\u6807\u7b7e',
   videoDetail: '\u89c6\u9891\u8be6\u60c5',
   videoLoadFailed: '\u89c6\u9891\u52a0\u8f7d\u5931\u8d25',
@@ -199,28 +201,6 @@ const getPlaybackUri = (video: PlayerVideo | null) => {
   return video?.source ?? '';
 };
 
-const getExternalUrl = (video: PlayerVideo | null) => {
-  if (!video) {
-    return '';
-  }
-
-  const playbackUri = getPlaybackUri(video);
-
-  if (playbackUri && /^https?:\/\//i.test(playbackUri)) {
-    return playbackUri;
-  }
-
-  if (video.source && /^https?:\/\//i.test(video.source)) {
-    return video.source;
-  }
-
-  if (video.webViewUrl && /^https?:\/\//i.test(video.webViewUrl)) {
-    return video.webViewUrl;
-  }
-
-  return '';
-};
-
 const getPlaybackDecision = (video: PlayerVideo | null): PlaybackDecision => {
   const uri = getPlaybackUri(video);
 
@@ -257,17 +237,18 @@ const getPlaybackDecision = (video: PlayerVideo | null): PlaybackDecision => {
     return {
       canPlayInApp: false,
       label: formatLabels[support.format] ?? support.format.toUpperCase(),
-      reason:
-        'Expo Go 当前缺少可用的原生视频组件，请用外部播放器打开，或使用 EAS development build 测试 App 内播放。',
+      reason: 'Expo Go 当前缺少可用的原生视频组件，请使用 EAS development build 测试 App 内播放。',
       reasonCode: 'native-video-unavailable',
       supportLevel: 'unsupported',
     };
   }
 
+  const runtimeEngine = getNativeVideoEngine();
+
   return {
     canPlayInApp: true,
     codec: support.codec,
-    engine: support.engine,
+    engine: runtimeEngine === 'expo-video' ? 'expo-video' : 'expo-av',
     format: support.format,
     label: formatLabels[support.format] ?? support.format.toUpperCase(),
     mimeType: support.mimeType,
@@ -306,7 +287,6 @@ const getRecommendationScore = (current: RecommendationContext, candidate: Video
 
   score += Math.min((candidate.playCount ?? 0) / 100000, 4);
   score += Math.min((candidate.danmakuCount ?? 0) / 20000, 3);
-
   return score;
 };
 
@@ -326,10 +306,16 @@ const getRelatedVideos = (current: PlayerVideo, videos: VideoItem[]) => {
     }
   }
 
-  return scoredVideos
-    .sort((first, second) => second.score - first.score)
+  return rankVideos(
+    scoredVideos.sort((first, second) => second.score - first.score).map(({ item }) => item),
+    DEFAULT_CONTENT_PREFERENCE_POLICY,
+    {
+      baseScore: (candidate) =>
+        scoredVideos.find((scoredVideo) => scoredVideo.item.id === candidate.id)?.score ?? 0,
+    },
+  )
     .slice(0, 6)
-    .map(({ item }) => item as PlayerVideo);
+    .map((item) => item as PlayerVideo);
 };
 
 type EpisodeSelection = {
@@ -337,8 +323,32 @@ type EpisodeSelection = {
   line: number;
 };
 
+type EpisodeResolveCandidate = {
+  episode: NonNullable<PlayerVideo['playLines']>[number]['episodes'][number];
+  line: number;
+};
+
 const getEpisodeLabel = (episode?: VideoPlayLine['episodes'][number]) =>
   episode ? (episode.episodeLabel ?? `\u7b2c${episode.episode}\u96c6`) : '';
+
+const getEpisodeCandidates = (
+  video: PlayerVideo,
+  preferredLine: number,
+  episodeNumber: number,
+): EpisodeResolveCandidate[] => {
+  const lines = video.playLines ?? [];
+  const preferredLineEntry = lines.find((line) => line.line === preferredLine);
+  const orderedLines = [
+    ...(preferredLineEntry ? [preferredLineEntry] : []),
+    ...lines.filter((line) => line.line !== preferredLine),
+  ];
+
+  return orderedLines.flatMap((line) => {
+    const episode = line.episodes.find((entry) => entry.episode === episodeNumber);
+
+    return episode ? [{ episode, line: line.line }] : [];
+  });
+};
 
 const patchEpisodeMedia = (
   current: PlayerVideo | null,
@@ -466,16 +476,6 @@ export default function PlayerScreen() {
     };
   }, [video, episodeOverride]);
   const playbackDecision = useMemo(() => getPlaybackDecision(effectiveVideo), [effectiveVideo]);
-  const externalUrl = useMemo(() => getExternalUrl(effectiveVideo), [effectiveVideo]);
-  const openExternalUrl = useCallback(() => {
-    if (!externalUrl) {
-      return;
-    }
-
-    Linking.openURL(externalUrl).catch(() => {
-      setPlaybackError(text.cannotOpen);
-    });
-  }, [externalUrl]);
   const tags = video?.tags?.filter(Boolean) ?? [];
   const selectedEpisodeRequest = manualEpisodeSelection ?? {
     episode: requestedEpisode,
@@ -753,39 +753,76 @@ export default function PlayerScreen() {
 
     const controller = new AbortController();
     let cancelled = false;
-    const playPageUrl = targetEpisode.playPageUrl;
-    const lineForOverride = resolvedLine;
     const episodeForOverride = resolvedEpisode;
+    const candidates = getEpisodeCandidates(video, resolvedLine, resolvedEpisode);
 
     setIsResolvingEpisode(true);
     setEpisodeOverride({});
     setPlaybackError('');
 
-    resolveEpisodeMediaUrl(
-      {
-        episode: episodeForOverride,
-        line: lineForOverride,
-        playPageUrl,
-        videoId: video.id,
-      },
-      { signal: controller.signal, timeoutMs: 12_000 },
-    )
+    (async () => {
+      let lastError: unknown;
+
+      for (const candidate of candidates) {
+        if (cancelled || controller.signal.aborted) {
+          return;
+        }
+
+        if (candidate.episode.mediaUrl) {
+          return {
+            candidate,
+            result: {
+              format: candidate.episode.format,
+              mediaUrl: candidate.episode.mediaUrl,
+              sourceType: candidate.episode.sourceType,
+            },
+          };
+        }
+
+        if (!candidate.episode.playPageUrl) {
+          lastError = new Error('Episode playPageUrl is empty.');
+          continue;
+        }
+
+        try {
+          const result = await resolveEpisodeMediaUrl(
+            {
+              episode: episodeForOverride,
+              line: candidate.line,
+              playPageUrl: candidate.episode.playPageUrl,
+              videoId: video.id,
+            },
+            { signal: controller.signal, timeoutMs: 12_000 },
+          );
+
+          if (result.mediaUrl) {
+            return { candidate, result };
+          }
+
+          lastError = new Error('Episode media URL is empty.');
+        } catch (error) {
+          lastError = error;
+        }
+      }
+
+      throw lastError instanceof Error ? lastError : new Error(text.playFailedTryOtherLine);
+    })()
       .then((result) => {
         if (cancelled || controller.signal.aborted) {
           return;
         }
 
-        if (!result.mediaUrl) {
-          setPlaybackError(text.playFailed);
+        if (!result?.result.mediaUrl) {
+          setPlaybackError(text.playFailedTryOtherLine);
           return;
         }
 
         const persistedItem = updateEpisodeMediaUrl({
           episode: episodeForOverride,
-          format: result.format,
-          line: lineForOverride,
-          mediaUrl: result.mediaUrl,
-          sourceType: result.sourceType,
+          format: result.result.format,
+          line: result.candidate.line,
+          mediaUrl: result.result.mediaUrl,
+          sourceType: result.result.sourceType,
           videoId: video.id,
         });
 
@@ -795,23 +832,23 @@ export default function PlayerScreen() {
           setVideo((current) =>
             patchEpisodeMedia(
               current,
-              { episode: episodeForOverride, line: lineForOverride },
-              result,
+              { episode: episodeForOverride, line: result.candidate.line },
+              result.result,
             ),
           );
         }
 
         setEpisodeOverride({
           episode: episodeForOverride,
-          format: result.format,
-          line: lineForOverride,
-          sourceType: result.sourceType,
-          uri: result.mediaUrl,
+          format: result.result.format,
+          line: result.candidate.line,
+          sourceType: result.result.sourceType,
+          uri: result.result.mediaUrl,
         });
       })
       .catch(() => {
         if (!cancelled && !controller.signal.aborted) {
-          setPlaybackError(text.playFailed);
+          setPlaybackError(text.playFailedTryOtherLine);
         }
       })
       .finally(() => {
@@ -1065,16 +1102,13 @@ export default function PlayerScreen() {
       return;
     }
 
-    const shareUrl = externalUrl || video.webViewUrl || video.source;
-    const message = shareUrl ? `${video.title}\n${shareUrl}` : video.title;
-
     Share.share({
-      message,
+      message: video.title,
       title: video.title,
     }).catch(() => {
       setPlaybackError(text.shareFailed);
     });
-  }, [externalUrl, video]);
+  }, [video]);
 
   const renderTopBar = () => (
     <View style={styles.topBar}>
@@ -1245,19 +1279,6 @@ export default function PlayerScreen() {
                   ? `${text.supportReason}: ${playbackDecision.reasonCode}`
                   : text.unsupportedPlaybackHint}
               </Text>
-              {externalUrl ? (
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={text.openInBrowser}
-                  onPress={openExternalUrl}
-                  style={styles.unsupportedActionButton}
-                >
-                  <Ionicons name="open-outline" size={18} color={colors.white} />
-                  <Text style={styles.unsupportedActionText}>{text.openInBrowser}</Text>
-                </Pressable>
-              ) : (
-                <Text style={styles.unsupportedHintMuted}>{text.openExternalUnavailable}</Text>
-              )}
             </View>
           )}
         </View>
