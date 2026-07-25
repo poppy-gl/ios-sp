@@ -3,10 +3,12 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
 import cron from 'node-cron';
-import { registerVideoRoutes } from './routes/videos.js';
+import { clearVideoApiCaches, registerVideoRoutes, warmVideoListCaches } from './routes/videos.js';
 import { runCrawlJob } from './jobs/crawlJob.js';
 
 const app = Fastify({ logger: true });
+const enableInProcessCrawlCron = process.env.ENABLE_IN_PROCESS_CRAWL_CRON === 'true';
+const inProcessCrawlCronSchedule = process.env.IN_PROCESS_CRAWL_CRON_SCHEDULE ?? '*/30 * * * *';
 
 await app.register(cors, { origin: true });
 await app.register(rateLimit, { max: 120, timeWindow: '1 minute' });
@@ -24,14 +26,26 @@ app.post('/api/admin/crawl', async (request, reply) => {
   }
 
   const saved = await runCrawlJob();
+  clearVideoApiCaches();
+  await warmVideoListCaches();
   return { ok: true, saved };
 });
 
 await registerVideoRoutes(app);
+void warmVideoListCaches().catch((error) => app.log.warn(error, 'video list cache warmup failed'));
 
-cron.schedule('*/30 * * * *', () => {
-  runCrawlJob().catch((error) => app.log.error(error));
-});
+if (enableInProcessCrawlCron) {
+  cron.schedule(inProcessCrawlCronSchedule, () => {
+    runCrawlJob()
+      .then(async () => {
+        clearVideoApiCaches();
+        await warmVideoListCaches();
+      })
+      .catch((error) => app.log.error(error));
+  });
+} else {
+  app.log.info('In-process crawl cron is disabled.');
+}
 
 const port = Number(process.env.PORT ?? 3000);
 await app.listen({ host: '127.0.0.1', port });

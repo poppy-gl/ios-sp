@@ -48,6 +48,7 @@ export type ProviderCrawlerSourceOverrides = {
 
 export type ProviderFetchVideosOptions = {
   category?: string;
+  cursor?: string;
   maxTotalVideos?: number;
   onRawProgress?: (items: RawVideoSource[]) => void;
   page?: number;
@@ -60,8 +61,10 @@ export type ProviderFetchVideosOptions = {
 
 export type ProviderFetchVideosResult = {
   errors: ProviderIssue[];
+  hasMore?: boolean;
   items?: VideoItem[];
   kind: ProviderKind;
+  nextCursor?: string;
   providerId: string;
   rawSources?: RawVideoSource[];
 };
@@ -90,6 +93,7 @@ export type VideoProvider = {
   fetchVideos?: (options?: ProviderFetchVideosOptions) => Promise<ProviderFetchVideosResult>;
   getHealth: () => ProviderHealth;
   getVideoById?: (id: string, options?: ProviderRequestOptions) => Promise<VideoItem | undefined>;
+  healthCheck?: (options?: ProviderRequestOptions) => Promise<unknown>;
   id: string;
   isConfigured: () => boolean;
   isEnabled: () => boolean;

@@ -1,4 +1,5 @@
 import { DEFAULT_CONTENT_PREFERENCE_POLICY } from './contentPreferencePolicy';
+import { getPlaybackAvailability } from '../video/playability';
 import type {
   RankingContext,
   RankingExplanation,
@@ -51,6 +52,33 @@ const includesAny = (fields: (string | undefined)[], keywords: readonly string[]
   return undefined;
 };
 
+const findPreferredMatch = (fields: (string | undefined)[], keywords: readonly string[]) => {
+  const normalizedFields = fields.map(normalize).filter(Boolean);
+
+  for (let index = 0; index < keywords.length; index += 1) {
+    const keyword = keywords[index];
+    const normalizedKeyword = normalize(keyword);
+    const matchedField = normalizedFields.find((field) => field.includes(normalizedKeyword));
+
+    if (normalizedKeyword && matchedField) {
+      return { index, keyword };
+    }
+  }
+
+  return undefined;
+};
+
+const getOrderedPreferenceBoost = (
+  baseBoost: number,
+  index: number,
+  total: number,
+  step = 0.35,
+) => {
+  const remainingPriority = Math.max(0, total - index - 1);
+
+  return baseBoost * (1 + remainingPriority * step);
+};
+
 const getFreshnessBoost = (video: RankingInput, policy: RankingPolicy, now: number) => {
   const timestamp = toTimestamp(video.createdAt ?? video.updatedAt);
 
@@ -74,13 +102,18 @@ const normalizeHealthScore = (value?: number) => {
 
 const getSourceHealth = (video: RankingInput) => {
   const explicit = normalizeHealthScore(video.sourceHealthScore ?? video.healthScore);
+  const playbackAvailability = getPlaybackAvailability(video);
 
   if (explicit !== undefined) {
     return explicit;
   }
 
-  if (video.playableInApp) {
+  if (playbackAvailability === 'direct') {
     return 0.85;
+  }
+
+  if (playbackAvailability === 'lazy') {
+    return 0.7;
   }
 
   if (video.unsupportedReason) {
@@ -203,32 +236,41 @@ export const explainVideoRanking = <TVideo extends RankingInput>(
     );
   }
 
-  const preferredSubCategory = includesAny(
+  const preferredSubCategory = findPreferredMatch(
     [video.subCategory, video.rawCategory, video.category, ...(video.tags ?? [])],
     policy.preferredSubCategories,
   );
 
   if (preferredSubCategory) {
-    score.subCategoryBoost = policy.weights.subCategoryBoost;
+    score.subCategoryBoost = getOrderedPreferenceBoost(
+      policy.weights.subCategoryBoost,
+      preferredSubCategory.index,
+      policy.preferredSubCategories.length,
+    );
     addReason(
       reasons,
       'preferred-sub-category',
       '命中内容偏好的子分类',
       score.subCategoryBoost,
-      preferredSubCategory,
+      preferredSubCategory.keyword,
     );
   }
 
-  const preferredKeyword = includesAny(textFields, policy.preferredKeywords);
+  const preferredKeyword = findPreferredMatch(textFields, policy.preferredKeywords);
 
   if (preferredKeyword) {
-    score.keywordBoost = policy.weights.keywordBoost;
+    score.keywordBoost = getOrderedPreferenceBoost(
+      policy.weights.keywordBoost,
+      preferredKeyword.index,
+      policy.preferredKeywords.length,
+      0.08,
+    );
     addReason(
       reasons,
       'preferred-keyword',
       '命中内容偏好关键词',
       score.keywordBoost,
-      preferredKeyword,
+      preferredKeyword.keyword,
     );
   }
 
@@ -279,9 +321,14 @@ export const explainVideoRanking = <TVideo extends RankingInput>(
     );
   }
 
-  if (video.playableInApp) {
+  const playbackAvailability = getPlaybackAvailability(video);
+
+  if (playbackAvailability === 'direct') {
     score.playableBoost = policy.weights.playableBoost;
     addReason(reasons, 'playable-in-app', 'App 内可直接播放', score.playableBoost);
+  } else if (playbackAvailability === 'lazy') {
+    score.playableBoost = policy.weights.playableBoost * 0.65;
+    addReason(reasons, 'lazy-resolvable', '可通过后端懒解析播放', score.playableBoost);
   }
 
   score.engagementBoost = getEngagementBoost(video, policy);

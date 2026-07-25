@@ -3,7 +3,8 @@ import {
   crawlConfiguredAuthorizedWebPages,
   fetchEpisodeMediaUrl,
   probeMediaUrlReachable,
-} from '@/services/webCrawlerService';
+} from '@/infra/crawler/webCrawlerService';
+import { isBackendApiConfigured } from '@/data/api/backendApiService';
 import type { VideoProvider } from '@/data/providers/providerTypes';
 
 declare const __DEV__: boolean;
@@ -39,6 +40,14 @@ const getLocalCrawlerEnablement = () => {
       enabled: false,
       explicit: true,
       reason: `${ENABLE_LOCAL_CRAWLER_ENV}=false disables local crawler fallback.`,
+    };
+  }
+
+  if (isBackendApiConfigured()) {
+    return {
+      enabled: false,
+      explicit: false,
+      reason: `Backend API is configured; local crawler fallback requires ${ENABLE_LOCAL_CRAWLER_ENV}=true.`,
     };
   }
 

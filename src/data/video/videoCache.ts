@@ -3,6 +3,7 @@ import {
   loadPersistedVideoCache,
   savePersistedVideos,
 } from '@/services/videoCacheStorage';
+import { isPlayableOrResolvable } from '@/domain/video/playability';
 import type { VideoItem, VideoPlayLine } from '@/types/video';
 
 import type {
@@ -159,11 +160,11 @@ export const buildStats = (
     durationMs,
     failureReasonDistribution,
     parseFailed: errors.filter((issue) => issue.code === 'PARSE_FAILED').length,
-    playable: items.filter((item) => item.playableInApp).length,
+    playable: items.filter(isPlayableOrResolvable).length,
     policyRejected: errors.filter((issue) => issue.code === 'POLICY_REJECTED').length,
     rawTotal,
     total: items.length,
-    unsupported: items.filter((item) => !item.playableInApp).length,
+    unsupported: items.filter((item) => !isPlayableOrResolvable(item)).length,
     updatedAt: new Date().toISOString(),
   };
 };
@@ -196,7 +197,7 @@ export const computeCacheQuality = (items: VideoItem[]) => {
     (sum, video) => sum + countResolvedEpisodesOnItem(video),
     0,
   );
-  const playableTotal = items.filter((video) => video.playableInApp).length;
+  const playableTotal = items.filter(isPlayableOrResolvable).length;
   const score =
     withPlayLines * 10_000 +
     episodeTotal * 100 +
@@ -418,6 +419,7 @@ export const commitCache = (result: VideoPipelineResult) => {
   const mergedQuality = computeCacheQuality(mergedItems);
   const isDrasticDrop =
     hasPreviousCache &&
+    result.source !== 'backend' &&
     result.status === 'ok' &&
     mergedItems.length < previousItems.length * 0.6 &&
     mergedQuality.score <= previousQuality.score;

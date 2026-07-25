@@ -1,42 +1,50 @@
 ﻿import * as cheerio from 'cheerio';
+import { classifyVideoCategory, type AppSubCategory } from './categoryClassifier.js';
 
 const BASE_URL = 'https://www.wanmeikk.me';
 
-const MAX_CATEGORY_PAGES = Number(process.env.CRAWL_MAX_CATEGORY_PAGES ?? Number.MAX_SAFE_INTEGER);
-const MAX_DETAIL_SCAN = Number(process.env.CRAWL_MAX_DETAIL_SCAN ?? Number.MAX_SAFE_INTEGER);
-const DETAIL_CONCURRENCY = Number(process.env.CRAWL_DETAIL_CONCURRENCY ?? 4);
-const REQUEST_DELAY_MS = Number(process.env.CRAWL_REQUEST_DELAY_MS ?? 120);
+const getPositiveNumber = (value: string | undefined, fallback: number) => {
+  const parsed = Number(value);
+
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+const UNLIMITED_CRAWL_LIMIT = Number.MAX_SAFE_INTEGER;
+const MAX_CATEGORY_PAGES = getPositiveNumber(
+  process.env.CRAWL_MAX_CATEGORY_PAGES,
+  UNLIMITED_CRAWL_LIMIT,
+);
+const MAX_DETAIL_SCAN = getPositiveNumber(process.env.CRAWL_MAX_DETAIL_SCAN, UNLIMITED_CRAWL_LIMIT);
+const MAX_DETAIL_SCAN_PER_SEED = getPositiveNumber(
+  process.env.CRAWL_MAX_DETAIL_SCAN_PER_SEED,
+  UNLIMITED_CRAWL_LIMIT,
+);
+const DETAIL_CONCURRENCY = Math.max(
+  1,
+  Math.floor(getPositiveNumber(process.env.CRAWL_DETAIL_CONCURRENCY, 1)),
+);
+const REQUEST_DELAY_MS = getPositiveNumber(process.env.CRAWL_REQUEST_DELAY_MS, 2500);
+const REQUEST_JITTER_MS = getPositiveNumber(process.env.CRAWL_REQUEST_JITTER_MS, 1500);
 const REQUEST_TIMEOUT_MS = Number(process.env.CRAWL_REQUEST_TIMEOUT_MS ?? 15000);
+const BLOCK_BACKOFF_MS = getPositiveNumber(process.env.CRAWL_BLOCK_BACKOFF_MS, 5 * 60 * 1000);
+const SEARCH_DETAIL_SCAN = Math.max(
+  1,
+  Math.floor(getPositiveNumber(process.env.CRAWL_SEARCH_DETAIL_SCAN, 1)),
+);
 const MAX_EPISODES_PER_VIDEO = Number(
   process.env.CRAWL_MAX_EPISODES_PER_VIDEO ?? Number.MAX_SAFE_INTEGER,
 );
+const APP_PROVIDER_LABEL = '聚合线路';
 
 type AppCategory = '电影' | '电视剧' | '综艺' | '动漫';
 
-type AppSubCategory =
-  | '动作片'
-  | '喜剧片'
-  | '爱情片'
-  | '恐怖片'
-  | '剧情片'
-  | '战争片'
-  | '动画电影'
-  | '国产剧'
-  | '韩剧'
-  | '日剧'
-  | '港台剧'
-  | '欧美剧'
-  | '泰剧'
-  | '海外剧'
-  | '内地综艺'
-  | '港台综艺'
-  | '日韩综艺'
-  | '欧美综艺'
-  | '国漫'
-  | '日漫'
-  | '港台动漫'
-  | '美漫'
-  | '海外动漫';
+const BALANCED_CATEGORY_WEIGHTS: Record<AppCategory, number> = {
+  电视剧: 0.55,
+  电影: 0.2,
+  综艺: 0.125,
+  动漫: 0.125,
+};
+const BALANCED_CATEGORY_ORDER: AppCategory[] = ['电视剧', '电影', '综艺', '动漫'];
 
 type Seed = {
   slug: string;
@@ -45,7 +53,7 @@ type Seed = {
   priority: number;
 };
 
-type DetailEntry = {
+export type CrawlDetailEntry = {
   url: string;
   category: AppCategory;
   fallbackSubCategory: AppSubCategory;
@@ -88,8 +96,8 @@ export type CrawledVideo = {
 };
 
 const seeds: Seed[] = [
+  { slug: 'guoju', category: '电视剧', fallbackSubCategory: '国产剧', priority: 1200 },
   { slug: 'hanju', category: '电视剧', fallbackSubCategory: '韩剧', priority: 1000 },
-  { slug: 'guoju', category: '电视剧', fallbackSubCategory: '国产剧', priority: 950 },
   { slug: 'rihan', category: '电视剧', fallbackSubCategory: '日剧', priority: 930 },
   { slug: 'gangju', category: '电视剧', fallbackSubCategory: '港台剧', priority: 900 },
   { slug: 'meiju', category: '电视剧', fallbackSubCategory: '欧美剧', priority: 880 },
@@ -104,12 +112,18 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function cleanText(value: string | undefined) {
-  return (value ?? '').replace(/\s+/g, ' ').trim();
+function getPoliteDelayMs() {
+  return REQUEST_DELAY_MS + Math.floor(Math.random() * REQUEST_JITTER_MS);
 }
 
-function normalizeText(value: string) {
-  return value.toLowerCase().replace(/\s+/g, '');
+function isLikelyBlocked(message: string) {
+  return /HTTP\s*(403|429|503)|other side closed|fetch failed|ECONNRESET|ETIMEDOUT|aborted/i.test(
+    message,
+  );
+}
+
+function cleanText(value: string | undefined) {
+  return (value ?? '').replace(/\s+/g, ' ').trim();
 }
 
 function toAbsoluteUrl(url: string) {
@@ -167,6 +181,10 @@ function getListUrl(seed: Seed, page: number) {
   return `${BASE_URL}/type/${seed.slug}-${page}.html`;
 }
 
+function getSearchUrl(keyword: string) {
+  return `${BASE_URL}/search.html?wd=${encodeURIComponent(keyword)}`;
+}
+
 function extractDetailLinks(html: string) {
   const links = new Set<string>();
   const $ = cheerio.load(html);
@@ -192,6 +210,93 @@ function extractDetailLinks(html: string) {
   }
 
   return [...links];
+}
+
+function inferSearchEntryCategory(text: string): {
+  category: AppCategory;
+  fallbackSubCategory: AppSubCategory;
+  priority: number;
+} {
+  if (/综艺|真人秀|脱口秀|晚会|选秀/.test(text)) {
+    return { category: '综艺', fallbackSubCategory: '内地综艺', priority: 700 };
+  }
+
+  if (/动漫|动画|番剧|国漫|日漫|美漫/.test(text)) {
+    const fallbackSubCategory = /日本|日漫|日语/.test(text)
+      ? '日漫'
+      : /国产|中国|国漫/.test(text)
+        ? '国漫'
+        : '海外动漫';
+
+    return { category: '动漫', fallbackSubCategory, priority: 680 };
+  }
+
+  if (
+    /第\s*\d+\s*集|全\d+集|季|电视剧|连续剧|国产|韩剧|韩国|日本|日剧|欧美|美剧|英剧|泰剧/.test(text)
+  ) {
+    const fallbackSubCategory = /韩国|韩剧|韩语/.test(text)
+      ? '韩剧'
+      : /日本|日剧|日语/.test(text)
+        ? '日剧'
+        : /国产|中国大陆|内地|普通话/.test(text)
+          ? '国产剧'
+          : /欧美|美国|英国|美剧|英剧|英语/.test(text)
+            ? '欧美剧'
+            : /泰国|泰剧|泰语/.test(text)
+              ? '泰剧'
+              : '海外剧';
+
+    return { category: '电视剧', fallbackSubCategory, priority: 760 };
+  }
+
+  const fallbackSubCategory = /动作|武侠|犯罪|枪战/.test(text)
+    ? '动作片'
+    : /喜剧|搞笑/.test(text)
+      ? '喜剧片'
+      : /爱情|言情/.test(text)
+        ? '爱情片'
+        : /恐怖|惊悚/.test(text)
+          ? '恐怖片'
+          : /战争|军事/.test(text)
+            ? '战争片'
+            : /动画/.test(text)
+              ? '动画电影'
+              : '剧情片';
+
+  return { category: '电影', fallbackSubCategory, priority: 650 };
+}
+
+function extractSearchDetailEntries(html: string, keyword: string) {
+  const detailMap = new Map<string, CrawlDetailEntry>();
+  const $ = cheerio.load(html);
+
+  $('a[href*="/video/"]').each((_, element) => {
+    const href = $(element).attr('href');
+
+    if (!href) {
+      return;
+    }
+
+    const url = toAbsoluteUrl(href);
+
+    if (!/\/video\/\d+\.html/i.test(url) || detailMap.has(url)) {
+      return;
+    }
+
+    const summary = cleanText(
+      $(element).closest('li, .vodlist_item, .module-card-item, .search-item, .module-item').text(),
+    );
+    const inferred = inferSearchEntryCategory(`${keyword} ${summary}`);
+
+    detailMap.set(url, {
+      url,
+      category: inferred.category,
+      fallbackSubCategory: inferred.fallbackSubCategory,
+      priority: inferred.priority,
+    });
+  });
+
+  return [...detailMap.values()].slice(0, SEARCH_DETAIL_SCAN);
 }
 
 function extractTitle($: cheerio.CheerioAPI) {
@@ -240,109 +345,24 @@ function extractKeywords($: cheerio.CheerioAPI) {
     .filter(Boolean);
 }
 
-function createClassifyText(input: {
-  title: string;
-  description?: string | undefined;
-  keywords: string[];
-  url: string;
-}) {
-  return normalizeText([input.title, input.description, ...input.keywords, input.url].join(' '));
-}
-
-function hasAny(text: string, keywords: string[]) {
-  return keywords.some((keyword) => text.includes(normalizeText(keyword)));
-}
-
-function inferMovieSubCategory(text: string, fallback: AppSubCategory): AppSubCategory {
-  if (hasAny(text, ['动画电影', '动画片', '动漫电影'])) return '动画电影';
-  if (hasAny(text, ['动作', '武侠', '警匪', '犯罪', '枪战'])) return '动作片';
-  if (hasAny(text, ['喜剧', '搞笑', '幽默'])) return '喜剧片';
-  if (hasAny(text, ['爱情', '言情', '浪漫'])) return '爱情片';
-  if (hasAny(text, ['恐怖', '惊悚', '灵异', '鬼片'])) return '恐怖片';
-  if (hasAny(text, ['战争', '抗战', '军事'])) return '战争片';
-
-  return fallback === '剧情片' ? '剧情片' : '剧情片';
-}
-
-function inferTvSubCategory(text: string, fallback: AppSubCategory): AppSubCategory {
-  if (hasAny(text, ['韩国', '韩剧', '韩语'])) return '韩剧';
-  if (hasAny(text, ['日本', '日剧', '日语'])) return '日剧';
-  if (hasAny(text, ['中国大陆', '大陆', '内地', '国产剧', '普通话'])) return '国产剧';
-  if (hasAny(text, ['香港', '台湾', '港台', '港剧', '台剧', '粤语'])) return '港台剧';
-  if (hasAny(text, ['美国', '英国', '欧美', '美剧', '英剧', '英语'])) return '欧美剧';
-  if (hasAny(text, ['泰国', '泰剧', '泰语'])) return '泰剧';
-
-  if (
-    fallback === '国产剧' ||
-    fallback === '韩剧' ||
-    fallback === '日剧' ||
-    fallback === '港台剧' ||
-    fallback === '欧美剧' ||
-    fallback === '泰剧'
-  ) {
-    return fallback;
-  }
-
-  return '海外剧';
-}
-
-function inferVarietySubCategory(text: string, fallback: AppSubCategory): AppSubCategory {
-  if (hasAny(text, ['韩国', '日本', '日韩', '韩综', '日综', '韩语', '日语'])) return '日韩综艺';
-  if (hasAny(text, ['香港', '台湾', '港台', '粤语'])) return '港台综艺';
-  if (hasAny(text, ['美国', '英国', '欧美', '英语'])) return '欧美综艺';
-
-  return fallback === '港台综艺' || fallback === '日韩综艺' || fallback === '欧美综艺'
-    ? fallback
-    : '内地综艺';
-}
-
-function inferAnimeSubCategory(text: string, fallback: AppSubCategory): AppSubCategory {
-  if (hasAny(text, ['国产', '中国大陆', '大陆', '国漫', '普通话'])) return '国漫';
-  if (hasAny(text, ['日本', '日漫', '番剧', '日语'])) return '日漫';
-  if (hasAny(text, ['香港', '台湾', '港台', '粤语'])) return '港台动漫';
-  if (hasAny(text, ['美国', '欧美', '美漫', '英语'])) return '美漫';
-
-  return fallback === '日漫' || fallback === '港台动漫' || fallback === '美漫'
-    ? fallback
-    : '海外动漫';
-}
-
-function inferCategory(seed: DetailEntry, text: string) {
-  const category = seed.category;
-
-  if (category === '电影') {
-    return {
-      category,
-      subCategory: inferMovieSubCategory(text, seed.fallbackSubCategory),
-      confidence: 0.86,
-      reason: '后端按电影分类页和标题/地区/关键词映射到前端电影二级分类',
-    };
-  }
-
-  if (category === '电视剧') {
-    return {
-      category,
-      subCategory: inferTvSubCategory(text, seed.fallbackSubCategory),
-      confidence: 0.9,
-      reason: '后端按电视剧分类页和标题/地区/关键词映射到前端电视剧二级分类',
-    };
-  }
-
-  if (category === '综艺') {
-    return {
-      category,
-      subCategory: inferVarietySubCategory(text, seed.fallbackSubCategory),
-      confidence: 0.86,
-      reason: '后端按综艺分类页和标题/地区/关键词映射到前端综艺二级分类',
-    };
-  }
-
-  return {
-    category,
-    subCategory: inferAnimeSubCategory(text, seed.fallbackSubCategory),
-    confidence: 0.86,
-    reason: '后端按动漫分类页和标题/地区/关键词映射到前端动漫二级分类',
-  };
+function inferCategory(
+  seed: CrawlDetailEntry,
+  input: {
+    description?: string | undefined;
+    keywords: string[];
+    title: string;
+    url: string;
+  },
+) {
+  return classifyVideoCategory({
+    category: seed.category,
+    description: input.description,
+    fallbackSubCategory: seed.fallbackSubCategory,
+    rawCategory: seed.fallbackSubCategory,
+    sourceUrl: input.url,
+    tags: input.keywords,
+    title: input.title,
+  });
 }
 
 function extractPlayLines($: cheerio.CheerioAPI, html: string) {
@@ -399,7 +419,17 @@ function extractPlayLines($: cheerio.CheerioAPI, html: string) {
     }));
 }
 
-async function parseDetail(entry: DetailEntry): Promise<CrawledVideo | null> {
+function getSourceIdFromDetailUrl(url: string) {
+  return url.match(/\/video\/(\d+)\.html/i)?.[1];
+}
+
+export function getVideoIdFromDetailUrl(url: string) {
+  const sourceId = getSourceIdFromDetailUrl(url);
+
+  return sourceId ? `wanmeikk-${sourceId}` : undefined;
+}
+
+async function parseDetail(entry: CrawlDetailEntry): Promise<CrawledVideo | null> {
   try {
     const html = await fetchHtml(entry.url);
     const $ = cheerio.load(html);
@@ -412,13 +442,12 @@ async function parseDetail(entry: DetailEntry): Promise<CrawledVideo | null> {
     const description = extractDescription($);
     const cover = extractCover($);
     const keywords = extractKeywords($);
-    const classifyText = createClassifyText({
+    const mapped = inferCategory(entry, {
       title,
       description,
       keywords,
       url: entry.url,
     });
-    const mapped = inferCategory(entry, classifyText);
     const playLines = extractPlayLines($, html);
     const episodeCount = playLines.reduce((sum, line) => sum + line.episodes.length, 0);
 
@@ -448,7 +477,7 @@ async function parseDetail(entry: DetailEntry): Promise<CrawledVideo | null> {
       subCategory: mapped.subCategory,
       categoryMappingConfidence: mapped.confidence,
       categoryMappingReason: mapped.reason,
-      provider: '完美看看',
+      provider: APP_PROVIDER_LABEL,
       seriesId: `wanmeikk-${sourceId}`,
       rawCategory: mapped.subCategory,
       tags: [...new Set([mapped.category, mapped.subCategory, ...keywords])],
@@ -466,14 +495,21 @@ async function parseDetail(entry: DetailEntry): Promise<CrawledVideo | null> {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.log(`[crawler] detail failed ${entry.url}: ${message}`);
+
+    if (isLikelyBlocked(message)) {
+      console.log(`[crawler] backing off for ${BLOCK_BACKOFF_MS}ms after blocked detail request`);
+      await sleep(BLOCK_BACKOFF_MS);
+    }
+
     return null;
   }
 }
 
 async function collectDetailEntries() {
-  const detailMap = new Map<string, DetailEntry>();
+  const detailMap = new Map<string, CrawlDetailEntry>();
 
   for (const seed of seeds) {
+    let seedDetailCount = 0;
     let emptyPageCount = 0;
 
     for (let page = 1; page <= MAX_CATEGORY_PAGES; page += 1) {
@@ -487,9 +523,9 @@ async function collectDetailEntries() {
         let upgraded = 0;
 
         for (const url of links) {
-          if (detailMap.size >= MAX_DETAIL_SCAN && !detailMap.has(url)) break;
+          if (seedDetailCount >= MAX_DETAIL_SCAN_PER_SEED && !detailMap.has(url)) break;
 
-          const nextEntry: DetailEntry = {
+          const nextEntry: CrawlDetailEntry = {
             url,
             category: seed.category,
             fallbackSubCategory: seed.fallbackSubCategory,
@@ -499,6 +535,7 @@ async function collectDetailEntries() {
 
           if (!previous) {
             detailMap.set(url, nextEntry);
+            seedDetailCount += 1;
             added += 1;
           } else if (nextEntry.priority > previous.priority) {
             detailMap.set(url, nextEntry);
@@ -516,15 +553,21 @@ async function collectDetailEntries() {
           emptyPageCount = 0;
         }
 
-        if (emptyPageCount >= 3 || detailMap.size >= MAX_DETAIL_SCAN) {
+        if (emptyPageCount >= 3 || seedDetailCount >= MAX_DETAIL_SCAN_PER_SEED) {
           break;
         }
 
-        await sleep(REQUEST_DELAY_MS);
+        await sleep(getPoliteDelayMs());
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         console.log(`[crawler] list failed ${listUrl}: ${message}`);
         emptyPageCount += 1;
+
+        if (isLikelyBlocked(message)) {
+          console.log(`[crawler] backing off for ${BLOCK_BACKOFF_MS}ms after blocked list request`);
+          await sleep(BLOCK_BACKOFF_MS);
+          break;
+        }
 
         if (emptyPageCount >= 2) {
           break;
@@ -536,10 +579,79 @@ async function collectDetailEntries() {
   return [...detailMap.values()].sort((a, b) => b.priority - a.priority);
 }
 
+function getBalancedCategoryTargets(maxVideos: number) {
+  const targets = new Map<AppCategory, number>();
+  let assigned = 0;
+
+  for (const category of BALANCED_CATEGORY_ORDER) {
+    const target =
+      category === BALANCED_CATEGORY_ORDER.at(-1)
+        ? Math.max(maxVideos - assigned, 0)
+        : Math.max(Math.floor(maxVideos * BALANCED_CATEGORY_WEIGHTS[category]), 1);
+
+    targets.set(category, target);
+    assigned += target;
+  }
+
+  return targets;
+}
+
+function balanceDetailEntries(entries: CrawlDetailEntry[], maxVideos: number) {
+  const seenUrls = new Set<string>();
+  const selected: CrawlDetailEntry[] = [];
+  const groups = new Map<AppCategory, CrawlDetailEntry[]>();
+  const targets = getBalancedCategoryTargets(maxVideos);
+
+  for (const entry of entries) {
+    const group = groups.get(entry.category) ?? [];
+    group.push(entry);
+    groups.set(entry.category, group);
+  }
+
+  for (const group of groups.values()) {
+    group.sort((a, b) => b.priority - a.priority);
+  }
+
+  for (const category of BALANCED_CATEGORY_ORDER) {
+    const target = targets.get(category) ?? 0;
+    const group = groups.get(category) ?? [];
+
+    for (const entry of group) {
+      if (
+        selected.length >= maxVideos ||
+        selected.filter((item) => item.category === category).length >= target
+      ) {
+        break;
+      }
+
+      if (!seenUrls.has(entry.url)) {
+        seenUrls.add(entry.url);
+        selected.push(entry);
+      }
+    }
+  }
+
+  for (const entry of entries) {
+    if (selected.length >= Math.max(maxVideos, MAX_DETAIL_SCAN)) {
+      break;
+    }
+
+    if (!seenUrls.has(entry.url)) {
+      seenUrls.add(entry.url);
+      selected.push(entry);
+    }
+  }
+
+  return selected;
+}
+
 export async function crawlVideos(
-  maxVideos = Number(process.env.CRAWL_MAX_VIDEOS ?? Number.MAX_SAFE_INTEGER),
+  maxVideos = getPositiveNumber(process.env.CRAWL_MAX_VIDEOS, UNLIMITED_CRAWL_LIMIT),
+  options?: {
+    shouldSkipDetail?: (entry: CrawlDetailEntry) => boolean | Promise<boolean>;
+  },
 ) {
-  const details = await collectDetailEntries();
+  const details = balanceDetailEntries(await collectDetailEntries(), maxVideos);
   const videos: CrawledVideo[] = [];
 
   console.log(`[crawler] collected detail pages=${details.length}, target videos=${maxVideos}`);
@@ -550,7 +662,19 @@ export async function crawlVideos(
     index += DETAIL_CONCURRENCY
   ) {
     const batch = details.slice(index, index + DETAIL_CONCURRENCY);
-    const results = await Promise.allSettled(batch.map((entry) => parseDetail(entry)));
+    const activeBatch: CrawlDetailEntry[] = [];
+
+    for (const entry of batch) {
+      const shouldSkip = await options?.shouldSkipDetail?.(entry);
+
+      if (shouldSkip) {
+        console.log(`[crawler] skip fresh detail: ${entry.url}`);
+      } else {
+        activeBatch.push(entry);
+      }
+    }
+
+    const results = await Promise.allSettled(activeBatch.map((entry) => parseDetail(entry)));
 
     for (const result of results) {
       if (result.status === 'fulfilled' && result.value) {
@@ -565,7 +689,52 @@ export async function crawlVideos(
     console.log(
       `[crawler] scanned=${Math.min(index + batch.length, details.length)} kept=${videos.length}`,
     );
-    await sleep(REQUEST_DELAY_MS);
+    await sleep(getPoliteDelayMs());
+  }
+
+  return videos;
+}
+
+export async function crawlSearchVideos(
+  keyword: string,
+  maxVideos = getPositiveNumber(process.env.CRAWL_SEARCH_MAX_VIDEOS, 6),
+  options?: {
+    shouldSkipDetail?: (entry: CrawlDetailEntry) => boolean | Promise<boolean>;
+  },
+) {
+  const normalizedKeyword = keyword.trim();
+
+  if (!normalizedKeyword) {
+    return [];
+  }
+
+  const html = await fetchHtml(getSearchUrl(normalizedKeyword));
+  const details = extractSearchDetailEntries(html, normalizedKeyword);
+  const videos: CrawledVideo[] = [];
+
+  console.log(
+    `[crawler] search keyword="${normalizedKeyword}" detail pages=${details.length}, target videos=${maxVideos}`,
+  );
+
+  for (const entry of details) {
+    if (videos.length >= maxVideos) {
+      break;
+    }
+
+    const shouldSkip = await options?.shouldSkipDetail?.(entry);
+
+    if (shouldSkip) {
+      console.log(`[crawler] skip existing search detail: ${entry.url}`);
+      continue;
+    }
+
+    const video = await parseDetail(entry);
+
+    if (video) {
+      videos.push(video);
+    }
+
+    await sleep(getPoliteDelayMs());
   }
 
   return videos;

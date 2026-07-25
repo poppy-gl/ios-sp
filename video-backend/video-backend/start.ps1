@@ -1,3 +1,4 @@
-Set-Location C:\video-backend
+Set-Location -LiteralPath $PSScriptRoot
 $env:NODE_ENV="production"
-node .\dist\server.js *> .\logs\server.log
+New-Item -ItemType Directory -Force .\logs | Out-Null
+.\scripts\windows\start-backend-forever.ps1

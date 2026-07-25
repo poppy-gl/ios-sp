@@ -10,6 +10,8 @@ import Animated, {
   withTiming,
 } from '@/shims/reanimated';
 import { VIDEO_COVER_ASPECT_RATIO } from '@/components/VideoCardSkeleton';
+import { getPlaybackAvailability } from '@/domain/video/playability';
+import { getPublicProviderLabel } from '@/domain/video/providerDisplay';
 import { theme } from '@/theme';
 import type { VideoItem } from '@/types/video';
 
@@ -20,8 +22,8 @@ type VideoCardProps = {
   onToggleFavorite?: (video: VideoItem) => void;
 };
 
-const unknownAuthor = '\u672a\u77e5\u4f5c\u8005';
 const playableText = '\u0041\u0070\u0070\u5185\u64ad\u653e';
+const lazyPlayableText = '\u5f85\u89e3\u6790';
 const unplayableText = '\u4e0d\u53ef\u64ad\u653e';
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
@@ -59,8 +61,21 @@ function VideoCardComponent({
     () => compactNumber(video.danmakuCount ?? fallbackStats.danmakuCount),
     [fallbackStats.danmakuCount, video.danmakuCount],
   );
-  const authorName = video.author || video.provider || unknownAuthor;
-  const isPlayable = video.playableInApp !== false;
+  const authorName = getPublicProviderLabel(video.author || video.provider);
+  const playbackAvailability = getPlaybackAvailability(video);
+  const isUnavailable = playbackAvailability === 'unplayable';
+  const playPillText =
+    playbackAvailability === 'direct'
+      ? playableText
+      : playbackAvailability === 'lazy'
+        ? lazyPlayableText
+        : unplayableText;
+  const playPillIcon =
+    playbackAvailability === 'direct'
+      ? 'play'
+      : playbackAvailability === 'lazy'
+        ? 'play-circle'
+        : 'alert-circle';
   const cardScale = useSharedValue(1);
   const favoriteScale = useSharedValue(1);
 
@@ -94,7 +109,7 @@ function VideoCardComponent({
       onPressOut={() => {
         cardScale.value = withSpring(1, { damping: 14, stiffness: 220 });
       }}
-      style={[styles.card, !isPlayable && styles.cardMuted, cardAnimatedStyle]}
+      style={[styles.card, isUnavailable && styles.cardMuted, cardAnimatedStyle]}
     >
       <View style={styles.thumbnailShell}>
         <Image
@@ -118,14 +133,14 @@ function VideoCardComponent({
             </View>
           </View>
         </View>
-        <View style={[styles.playPill, !isPlayable && styles.unplayablePill]}>
+        <View style={[styles.playPill, isUnavailable && styles.unplayablePill]}>
           <Ionicons
-            name={isPlayable ? 'play' : 'alert-circle'}
+            name={playPillIcon}
             size={12}
-            color={isPlayable ? theme.colors.primaryDark : theme.colors.white}
+            color={isUnavailable ? theme.colors.white : theme.colors.primaryDark}
           />
-          <Text style={[styles.playPillText, !isPlayable && styles.unplayablePillText]}>
-            {isPlayable ? playableText : unplayableText}
+          <Text style={[styles.playPillText, isUnavailable && styles.unplayablePillText]}>
+            {playPillText}
           </Text>
         </View>
         {onToggleFavorite ? (
@@ -205,6 +220,7 @@ export const VideoCard = memo(VideoCardComponent, (previous, next) => {
     previousVideo.playCount === nextVideo.playCount &&
     previousVideo.danmakuCount === nextVideo.danmakuCount &&
     previousVideo.playableInApp === nextVideo.playableInApp &&
+    getPlaybackAvailability(previousVideo) === getPlaybackAvailability(nextVideo) &&
     previousVideo.unsupportedReason === nextVideo.unsupportedReason
   );
 });

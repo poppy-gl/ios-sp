@@ -1,4 +1,5 @@
 import { clearLocalCrawlerProviderState } from '@/data/providers/localCrawlerProvider';
+import { isPlayableOrResolvable } from '@/domain/video/playability';
 import { usePlayHistoryStore } from '@/store/playHistoryStore';
 import { useSettingsStore } from '@/store/settingsStore';
 import type { VideoCategory, VideoItem } from '@/types/video';
@@ -11,7 +12,13 @@ import {
   hydrateFromPersistedCache,
   setCachedResult,
 } from './videoCache';
-import { fetchVideoDetail, searchProviderVideos, dedupeVideos } from './videoRepository';
+import {
+  dedupeVideos,
+  fetchBackendVideoPage,
+  fetchVideoDetail,
+  clearVideoRepositoryCaches,
+  searchProviderVideos,
+} from './videoRepository';
 import {
   comparePlayableVideos,
   compareUnsupportedVideos,
@@ -29,20 +36,49 @@ import {
   resetRefreshCoordinator,
   revalidateInBackground,
 } from './videoRefreshCoordinator';
-import type { VideoPipelineResult, VideoServiceContext } from './videoTypes';
+import type {
+  VideoPageContext,
+  VideoPageResult,
+  VideoPipelineResult,
+  VideoServiceContext,
+} from './videoTypes';
 import { VideoServiceError } from './videoTypes';
 import { mapCategoryToAppCategory } from '@/services/categoryService';
+
+const DEFAULT_BACKEND_PAGE_SIZE = 200;
+const SEARCH_CACHE_TTL_MS = 5 * 60_000;
+const MAX_SEARCH_CACHE_ENTRIES = 20;
+
+const searchResultCache = new Map<
+  string,
+  {
+    expiresAt: number;
+    items: VideoItem[];
+  }
+>();
 
 const shouldThrowResult = (result: VideoPipelineResult) =>
   result.items.length === 0 &&
   (result.status === 'crawl_failed' || result.status === 'parse_failed');
 
 const toServiceError = (result: VideoPipelineResult) => {
-  const code = result.status === 'parse_failed' ? 'PARSE_FAILED' : 'CRAWL_FAILED';
+  const firstMessage = result.errors[0]?.message;
+  const isBackendUnreachable =
+    result.source === 'backend' &&
+    firstMessage &&
+    /network request failed|timed out|aborted|backend api/i.test(firstMessage);
+  const code =
+    result.status === 'parse_failed'
+      ? 'PARSE_FAILED'
+      : isBackendUnreachable
+        ? 'BACKEND_UNREACHABLE'
+        : 'CRAWL_FAILED';
   const message =
     result.status === 'parse_failed'
-      ? 'All crawled video sources failed to parse.'
-      : 'Authorized page crawl failed and no cached videos are available.';
+      ? '视频数据解析失败。'
+      : isBackendUnreachable
+        ? `后端 API 连接失败：${firstMessage}`
+        : '视频数据加载失败，且本地没有可用缓存。';
 
   return new VideoServiceError(code, message, result);
 };
@@ -75,7 +111,7 @@ export const getAllVideos = async (context?: VideoServiceContext): Promise<Video
   }
 
   if (shouldThrowResult(result)) {
-    if (cacheAfterRefresh && !context?.bypassCache) {
+    if (cacheAfterRefresh) {
       return cacheAfterRefresh.items;
     }
 
@@ -87,6 +123,83 @@ export const getAllVideos = async (context?: VideoServiceContext): Promise<Video
   }
 
   return result.items;
+};
+
+const normalizePageNumber = (value: number) =>
+  Number.isFinite(value) && value > 0 ? Math.floor(value) : 1;
+
+const normalizePageSize = (value?: number) =>
+  Math.min(
+    Number.isFinite(value) && Number(value) > 0
+      ? Math.floor(Number(value))
+      : DEFAULT_BACKEND_PAGE_SIZE,
+    DEFAULT_BACKEND_PAGE_SIZE,
+  );
+
+export const getVideoPage = async (context: VideoPageContext): Promise<VideoPageResult> => {
+  const page = normalizePageNumber(context.page);
+  const pageSize = normalizePageSize(context.pageSize);
+  const commitToCache = context.commitToCache !== false;
+  const result = await fetchBackendVideoPage({
+    category: context.category,
+    cursor: context.cursor,
+    page,
+    pageSize,
+    signal: context.signal,
+  });
+  const cache = getCurrentCache();
+  const previousItems = commitToCache ? (cache?.items ?? []) : [];
+
+  if (
+    result.items.length === 0 &&
+    (result.status === 'crawl_failed' || result.status === 'parse_failed')
+  ) {
+    if (previousItems.length > 0 && page === 1) {
+      return {
+        hasMore: false,
+        items: [],
+        mergedItems: previousItems,
+        page,
+        pageSize,
+        source: result.source ?? cache?.source,
+      };
+    }
+
+    throw toServiceError(result);
+  }
+
+  const mergedItems = dedupeVideos([...previousItems, ...result.items]);
+  const errors = [...(cache?.errors ?? []), ...result.errors];
+  const hasNewItems = mergedItems.length > previousItems.length;
+  const shouldCommit = hasNewItems || (result.items.length > 0 && previousItems.length === 0);
+
+  if (commitToCache && shouldCommit) {
+    setCachedResult(
+      {
+        errors,
+        items: mergedItems,
+        source: result.source ?? cache?.source,
+        stats: buildStats(
+          mergedItems,
+          result.stats.durationMs,
+          Math.max(cache?.stats.rawTotal ?? 0, mergedItems.length),
+          errors,
+        ),
+        status: errors.length > 0 ? 'partial' : 'ok',
+      },
+      { preserveEpisodeProgress: false },
+    );
+  }
+
+  return {
+    hasMore: result.hasMore ?? result.stats.rawTotal >= pageSize,
+    items: result.items,
+    mergedItems: shouldCommit ? mergedItems : previousItems,
+    ...(result.nextCursor ? { nextCursor: result.nextCursor } : {}),
+    page,
+    pageSize,
+    source: result.source ?? cache?.source,
+  };
 };
 
 export const getVideoById = async (
@@ -246,7 +359,7 @@ const getRecommendationScore = (video: VideoItem, preference: RecommendationPref
     preference.categories.get(normalizeCategoryKey(String(video.category))) ?? 0;
   const favoriteBoost = preference.favoriteIds.has(video.id) ? 180 : 0;
   const historyBoost = preference.historyIds.get(video.id) ?? 0;
-  const playableBoost = video.playableInApp ? 320 : 0;
+  const playableBoost = isPlayableOrResolvable(video) ? 320 : 0;
   const recentScore = getRecencyScore(video.createdAt);
   const engagementScore = Math.min(getEngagementScore(video) / 1_000, 90);
   const latestSettingBoost = preference.categories.has('__latest__') ? recentScore * 0.7 : 0;
@@ -271,17 +384,37 @@ export const searchVideos = async (
   context?: VideoServiceContext,
 ): Promise<VideoItem[]> => {
   const normalizedKeyword = keyword.trim().toLowerCase();
+
+  if (!normalizedKeyword) {
+    return [];
+  }
+
+  const cachedSearchResult = searchResultCache.get(normalizedKeyword);
+
+  if (!context?.bypassCache && cachedSearchResult && cachedSearchResult.expiresAt > Date.now()) {
+    return cachedSearchResult.items;
+  }
+
   const providerResults = await searchProviderVideos(keyword, context);
 
   if (providerResults) {
+    searchResultCache.set(normalizedKeyword, {
+      expiresAt: Date.now() + SEARCH_CACHE_TTL_MS,
+      items: providerResults,
+    });
+
+    if (searchResultCache.size > MAX_SEARCH_CACHE_ENTRIES) {
+      const oldestKey = searchResultCache.keys().next().value;
+
+      if (oldestKey) {
+        searchResultCache.delete(oldestKey);
+      }
+    }
+
     return providerResults;
   }
 
-  const videos = await getAllVideos(context);
-
-  if (!normalizedKeyword) {
-    return videos;
-  }
+  const videos = getCachedItems();
 
   return sortSearchResults(
     videos
@@ -305,13 +438,15 @@ export const getRecommendedVideos = async (context?: VideoServiceContext): Promi
 export const getPlayableVideos = async (context?: VideoServiceContext): Promise<VideoItem[]> => {
   const videos = await getAllVideos(context);
 
-  return [...videos].filter((video) => video.playableInApp).sort(comparePlayableVideos);
+  return [...videos].filter(isPlayableOrResolvable).sort(comparePlayableVideos);
 };
 
 export const getUnsupportedVideos = async (context?: VideoServiceContext): Promise<VideoItem[]> => {
   const videos = await getAllVideos(context);
 
-  return [...videos].filter((video) => !video.playableInApp).sort(compareUnsupportedVideos);
+  return [...videos]
+    .filter((video) => !isPlayableOrResolvable(video))
+    .sort(compareUnsupportedVideos);
 };
 
 export const removeVideosByIds = (videoIds: string[]): number => {
@@ -348,5 +483,7 @@ export const clearVideoServiceCache = () => {
   abortBackgroundDeepCrawl();
   resetRefreshCoordinator();
   clearVideoCache();
+  clearVideoRepositoryCaches();
+  searchResultCache.clear();
   void clearLocalCrawlerProviderState();
 };

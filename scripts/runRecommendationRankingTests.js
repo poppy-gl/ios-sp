@@ -13,6 +13,7 @@ const moduleFiles = {
   ),
   './rankingTypes': path.join(rootDir, 'src/domain/recommendation/rankingTypes.ts'),
   './rankVideos': path.join(rootDir, 'src/domain/recommendation/rankVideos.ts'),
+  '../video/playability': path.join(rootDir, 'src/domain/video/playability.ts'),
 };
 
 const loadModule = (specifier) => {
@@ -65,22 +66,23 @@ assert.deepEqual(
   rankIds([
     {
       ...baseVideo,
-      id: 'ordinary-tv',
-      title: '普通电视剧',
-      category: '电视剧',
-      subCategory: '国产剧',
-    },
-    {
-      ...baseVideo,
       id: 'k-drama',
       title: '浪漫韩剧',
       category: '电视剧',
       subCategory: '韩剧',
       tags: ['韩语'],
     },
+    {
+      ...baseVideo,
+      id: 'domestic-drama',
+      title: '热播国产剧',
+      category: '电视剧',
+      subCategory: '国产剧',
+      tags: ['国语'],
+    },
   ])[0],
-  'k-drama',
-  '韩剧同等条件下应该高于普通电视剧',
+  'domestic-drama',
+  '国产剧同等条件下应该高于韩剧和其他电视剧',
 );
 
 assert.deepEqual(

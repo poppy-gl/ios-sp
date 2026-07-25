@@ -251,7 +251,7 @@ export const refreshVideos = async (
     .catch((error) => {
       const issue: VideoPipelineIssue = {
         code: 'CRAWL_FAILED',
-        message: error instanceof Error ? error.message : 'Authorized page crawl failed.',
+        message: error instanceof Error ? error.message : 'Video provider refresh failed.',
       };
       const result: VideoPipelineResult = {
         errors: [issue],

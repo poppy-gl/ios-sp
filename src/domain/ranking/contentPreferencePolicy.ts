@@ -27,7 +27,28 @@ export const isPreferredKoreanDrama = (video: PreferenceVideo): boolean => {
   );
 };
 
+export const isPreferredDomesticDrama = (video: PreferenceVideo): boolean => {
+  const haystack = [
+    video.category,
+    video.subCategory,
+    video.rawCategory,
+    video.title,
+    ...(video.tags ?? []),
+  ]
+    .map((value) => normalize(String(value ?? '')))
+    .filter(Boolean)
+    .join(' ');
+
+  return CONTENT_PREFERENCE_POLICY.domesticDramaKeywords.some((keyword: string) =>
+    haystack.includes(keyword.toLowerCase()),
+  );
+};
+
 export const getContentPreferencePriority = (video: PreferenceVideo): number => {
+  if (isPreferredDomesticDrama(video)) {
+    return CONTENT_PREFERENCE_POLICY.legacyBoosts.domesticDrama;
+  }
+
   if (isPreferredKoreanDrama(video)) {
     return CONTENT_PREFERENCE_POLICY.legacyBoosts.koreanDrama;
   }

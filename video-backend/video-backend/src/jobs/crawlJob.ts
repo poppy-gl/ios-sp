@@ -1,6 +1,20 @@
 import { toAppVideoItem } from '../contracts/appVideoContract.js';
 import { prisma } from '../db/prisma.js';
-import { crawlVideos, type CrawledVideo } from '../services/crawler.js';
+import {
+  crawlVideos,
+  getVideoIdFromDetailUrl,
+  type CrawledVideo,
+  type CrawlDetailEntry,
+} from '../services/crawler.js';
+
+const getPositiveNumber = (value: string | undefined, fallback: number) => {
+  const parsed = Number(value);
+
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+const UNLIMITED_CRAWL_LIMIT = Number.MAX_SAFE_INTEGER;
+const SKIP_EXISTING_HOURS = getPositiveNumber(process.env.CRAWL_SKIP_EXISTING_HOURS, 72);
 
 function toDbPayload(video: CrawledVideo) {
   const appVideo = toAppVideoItem(video);
@@ -19,13 +33,43 @@ function toDbPayload(video: CrawledVideo) {
   };
 }
 
+const getSavePriority = (video: CrawledVideo) => {
+  if (video.subCategory === '国产剧') return 4000;
+  if (video.subCategory === '韩剧') return 3000;
+  if (video.category === '电视剧') return 2000;
+
+  return 1000;
+};
+
 export async function runCrawlJob() {
-  const maxVideos = Number(process.env.CRAWL_MAX_VIDEOS ?? Number.MAX_SAFE_INTEGER);
-  const videos = await crawlVideos(maxVideos);
+  const maxVideos = getPositiveNumber(process.env.CRAWL_MAX_VIDEOS, UNLIMITED_CRAWL_LIMIT);
+  const freshCutoff = new Date(Date.now() - SKIP_EXISTING_HOURS * 60 * 60 * 1000);
+  const shouldSkipDetail = async (entry: CrawlDetailEntry) => {
+    const videoId = getVideoIdFromDetailUrl(entry.url);
+
+    if (!videoId || SKIP_EXISTING_HOURS <= 0) {
+      return false;
+    }
+
+    const existing = await prisma.video.findUnique({
+      select: { updatedAt: true },
+      where: { id: videoId },
+    });
+
+    return Boolean(existing && existing.updatedAt >= freshCutoff);
+  };
+  const videos = await crawlVideos(maxVideos, { shouldSkipDetail });
+  const orderedVideos = videos
+    .map((video, index) => ({ index, video }))
+    .sort(
+      (first, second) =>
+        getSavePriority(second.video) - getSavePriority(first.video) || first.index - second.index,
+    )
+    .map((item) => item.video);
 
   let saved = 0;
 
-  for (const video of videos) {
+  for (const video of orderedVideos) {
     const payload = toDbPayload(video);
 
     await prisma.video.upsert({

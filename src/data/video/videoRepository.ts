@@ -33,6 +33,9 @@ import type {
 
 const VIDEO_PIPELINE_TIMEOUT_MS = 90_000;
 const VIDEO_PIPELINE_INITIAL_MAX_VIDEOS = 200;
+const BACKEND_PAGE_TIMEOUT_MS = 20_000;
+const BACKEND_SEARCH_TIMEOUT_MS = 12_000;
+const BACKEND_PAGE_CACHE_TTL_MS = 30_000;
 const PROGRESS_EMIT_INTERVAL_MS = 1_500;
 const PROGRESS_EMIT_MIN_INCREMENT = 16;
 const EARLY_COMMIT_THRESHOLD = 4;
@@ -42,6 +45,73 @@ const legacyStaticSourcePattern =
   /demoVideos|videoSources|USER_VIDEO_SOURCES|USER_REMOTE_API_ENDPOINTS|USER_CUSTOM_VIDEO_SOURCES|legacy-/i;
 
 let lastProviderSelectionLogKey = '';
+
+const backendPageResultCache = new Map<
+  string,
+  {
+    expiresAt: number;
+    result: VideoPipelineResult;
+  }
+>();
+const backendPageRequests = new Map<string, Promise<VideoPipelineResult>>();
+
+const getBackendPageCacheKey = (options: {
+  category?: string;
+  cursor?: string;
+  page: number;
+  pageSize: number;
+}) =>
+  JSON.stringify({
+    category: options.category ?? '',
+    cursor: options.cursor ?? '',
+    page: options.page,
+    pageSize: options.pageSize,
+  });
+
+const getCachedBackendPageResult = (key: string) => {
+  const cached = backendPageResultCache.get(key);
+
+  if (!cached) {
+    return undefined;
+  }
+
+  if (cached.expiresAt <= Date.now()) {
+    backendPageResultCache.delete(key);
+    return undefined;
+  }
+
+  return cached.result;
+};
+
+const setCachedBackendPageResult = (key: string, result: VideoPipelineResult) => {
+  if (
+    result.items.length === 0 ||
+    result.status === 'crawl_failed' ||
+    result.status === 'parse_failed'
+  ) {
+    return;
+  }
+
+  backendPageResultCache.set(key, {
+    expiresAt: Date.now() + BACKEND_PAGE_CACHE_TTL_MS,
+    result,
+  });
+
+  while (backendPageResultCache.size > 80) {
+    const oldestKey = backendPageResultCache.keys().next().value;
+
+    if (!oldestKey) {
+      break;
+    }
+
+    backendPageResultCache.delete(oldestKey);
+  }
+};
+
+export const clearVideoRepositoryCaches = () => {
+  backendPageRequests.clear();
+  backendPageResultCache.clear();
+};
 
 const logProviderSelection = (scope: string, selection: ProviderSelection) => {
   const snapshot = getProviderSelectionLog(selection);
@@ -328,10 +398,18 @@ const buildBackendResult = (
   items: VideoItem[],
   initialErrors: VideoPipelineIssue[],
   startedAt: number,
+  pagination?: { hasMore?: boolean; nextCursor?: string },
 ): VideoPipelineResult => {
-  const mappedVideos = mapVideoItemsToAppCategories(dedupeVideos(items));
-  const filteredVideos = filterDisplayableBackendVideos(mappedVideos);
+  const dedupedVideos = dedupeVideos(items);
+  const filteredVideos = filterDisplayableBackendVideos(dedupedVideos);
   const sortedVideos = sortDefaultVideos(filteredVideos);
+
+  console.info('[videoRepository] backend result', {
+    deduped: dedupedVideos.length,
+    filtered: filteredVideos.length,
+    incoming: items.length,
+    sorted: sortedVideos.length,
+  });
 
   if (sortedVideos.length === 0 && initialErrors.length === 0) {
     const errors: VideoPipelineIssue[] = [
@@ -343,6 +421,7 @@ const buildBackendResult = (
 
     return {
       errors,
+      hasMore: false,
       items: [],
       source: 'backend',
       stats: buildStats([], Date.now() - startedAt, items.length, errors),
@@ -352,12 +431,20 @@ const buildBackendResult = (
 
   return {
     errors: initialErrors,
+    ...(typeof pagination?.hasMore === 'boolean' ? { hasMore: pagination.hasMore } : {}),
     items: sortedVideos,
+    ...(pagination?.nextCursor ? { nextCursor: pagination.nextCursor } : {}),
     source: 'backend',
     stats: buildStats(sortedVideos, Date.now() - startedAt, items.length, initialErrors),
     status: getResultStatus(sortedVideos, initialErrors),
   };
 };
+
+const normalizePageNumber = (value: number) =>
+  Number.isFinite(value) && value > 0 ? Math.floor(value) : 1;
+
+const normalizeBackendPageSize = (value: number) =>
+  Math.min(Number.isFinite(value) && value > 0 ? Math.floor(value) : 200, 200);
 
 export const fetchAndNormalizeVideos = async (
   context?: VideoServiceContext,
@@ -500,6 +587,99 @@ export const fetchAndNormalizeVideos = async (
   };
 };
 
+export const fetchBackendVideoPage = async (options: {
+  category?: string;
+  cursor?: string;
+  page: number;
+  pageSize: number;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}): Promise<VideoPipelineResult> => {
+  const startedAt = Date.now();
+  const selection = selectVideoProviders();
+  const page = normalizePageNumber(options.page);
+  const pageSize = normalizeBackendPageSize(options.pageSize);
+  const cacheKey = getBackendPageCacheKey({
+    category: options.category,
+    page: options.cursor ? 1 : page,
+    pageSize,
+    cursor: options.cursor,
+  });
+  const cachedResult = getCachedBackendPageResult(cacheKey);
+
+  if (cachedResult) {
+    return cachedResult;
+  }
+
+  const existingRequest = backendPageRequests.get(cacheKey);
+
+  if (existingRequest) {
+    return existingRequest;
+  }
+
+  logProviderSelection(`page:${page}`, selection);
+
+  if (!selection.primary?.fetchVideos || selection.primary.kind !== 'backend') {
+    return createEmptyResult(selection.primary?.kind, selection.reason);
+  }
+
+  const primaryProvider = selection.primary;
+
+  const request = (async () => {
+    const providerResult = await primaryProvider.fetchVideos?.({
+      category: options.category,
+      cursor: options.cursor,
+      page,
+      pageSize,
+      signal: options.signal,
+      timeoutMs: options.timeoutMs ?? BACKEND_PAGE_TIMEOUT_MS,
+    });
+    if (!providerResult) {
+      return createEmptyResult(primaryProvider.kind, selection.reason);
+    }
+
+    const providerIssues = mapProviderIssuesToPipelineIssues(providerResult.errors);
+    const result = buildBackendResult(providerResult.items ?? [], providerIssues, startedAt, {
+      ...(typeof providerResult.hasMore === 'boolean' ? { hasMore: providerResult.hasMore } : {}),
+      ...(providerResult.nextCursor ? { nextCursor: providerResult.nextCursor } : {}),
+    });
+
+    setCachedBackendPageResult(cacheKey, result);
+
+    return result;
+  })();
+
+  backendPageRequests.set(cacheKey, request);
+
+  try {
+    return await request;
+  } catch (error) {
+    console.warn('[videoRepository] backend page request failed', {
+      category: options.category,
+      cursor: options.cursor ? 'present' : undefined,
+      error: error instanceof Error ? error.message : String(error),
+      page,
+      pageSize,
+    });
+    const errors: VideoPipelineIssue[] = [
+      {
+        code: 'CRAWL_FAILED',
+        message: error instanceof Error ? error.message : 'Backend page request failed.',
+      },
+    ];
+
+    return {
+      errors,
+      items: [],
+      source: 'backend',
+      stats: buildStats([], Date.now() - startedAt, 0, errors),
+      status: 'crawl_failed',
+    };
+  } finally {
+    backendPageRequests.delete(cacheKey);
+  }
+};
+
 export const fetchBackgroundVideos = async (options: {
   maxTotalVideos: number;
   signal: AbortSignal;
@@ -557,6 +737,7 @@ export const searchProviderVideos = async (
   try {
     const providerResults = await searchProvider.searchVideos(keyword, {
       signal: context?.signal,
+      timeoutMs: BACKEND_SEARCH_TIMEOUT_MS,
     });
     return sortSearchResults(
       dedupeVideos(filterDisplayableBackendVideos(providerResults)),

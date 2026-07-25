@@ -21,4 +21,27 @@ model Video {
   rawJson     String
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+
+  @@index([category, updatedAt, id])
+  @@index([subCategory, updatedAt, id])
+  @@index([updatedAt, id])
+  @@index([title])
+}
+
+model ResolvedEpisode {
+  id            String   @id
+  videoId       String
+  line          Int
+  episode       Int
+  playPageUrl   String
+  mediaUrl      String?
+  format        String?
+  sourceType    String?
+  reachable     Boolean?
+  failureReason String?
+  resolvedAt    DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([videoId, line, episode])
 }

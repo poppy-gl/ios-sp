@@ -1,5 +1,6 @@
 import { DEFAULT_CONTENT_PREFERENCE_POLICY } from '@/domain/recommendation/contentPreferencePolicy';
 import { explainVideoRanking, rankVideos } from '@/domain/recommendation/rankVideos';
+import { isPlayableOrResolvable } from '@/domain/video/playability';
 import type { VideoItem } from '@/types/video';
 
 export const toTimestamp = (value?: string) => {
@@ -48,7 +49,8 @@ const compareByDefaultOrderWithScore = (
     return priorityDelta;
   }
 
-  const playableDelta = Number(second.playableInApp) - Number(first.playableInApp);
+  const playableDelta =
+    Number(isPlayableOrResolvable(second)) - Number(isPlayableOrResolvable(first));
 
   if (playableDelta !== 0) {
     return playableDelta;

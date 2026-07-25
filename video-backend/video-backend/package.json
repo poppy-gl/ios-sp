@@ -9,7 +9,9 @@
     "start": "node src/server.js",
     "build": "tsc",
     "dev": "tsx watch src/server.ts",
-    "crawl": "tsx src/jobs/crawlJob.ts"
+    "crawl": "tsx src/jobs/crawlJob.ts",
+    "inspect:videos": "tsx src/scripts/inspectVideos.ts",
+    "reclassify": "tsx src/scripts/reclassifyVideos.ts"
   },
   "keywords": [],
   "author": "",

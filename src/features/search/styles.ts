@@ -1,0 +1,182 @@
+import { StyleSheet } from 'react-native';
+import { colors, fontSize, radius, shadow, spacing } from '@/theme';
+export const styles = StyleSheet.create({
+  safeArea: {
+    flex: 1,
+    backgroundColor: colors.background,
+  },
+  listContent: {
+    paddingHorizontal: spacing.md,
+    paddingTop: spacing.sm,
+    paddingBottom: spacing.xxl,
+  },
+  header: {
+    paddingTop: spacing.sm,
+    paddingBottom: spacing.md,
+    gap: spacing.md,
+  },
+  title: {
+    color: colors.primaryDark,
+    fontSize: fontSize.xxl,
+    fontWeight: '900',
+  },
+  searchBox: {
+    minHeight: 48,
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.card,
+    gap: spacing.sm,
+    paddingLeft: spacing.md,
+    paddingRight: spacing.xs,
+    ...shadow.soft,
+  },
+  searchIconBubble: {
+    width: 28,
+    height: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: radius.pill,
+    backgroundColor: colors.primary,
+  },
+  input: {
+    flex: 1,
+    color: colors.text,
+    fontSize: fontSize.md,
+    fontWeight: '700',
+    paddingVertical: spacing.sm,
+  },
+  iconButton: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 34,
+    height: 34,
+    borderRadius: radius.pill,
+    backgroundColor: colors.primarySoft,
+  },
+  searchButton: {
+    borderRadius: radius.pill,
+    backgroundColor: colors.primary,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+  },
+  searchText: {
+    color: colors.white,
+    fontSize: fontSize.md,
+    fontWeight: '900',
+  },
+  pressed: {
+    opacity: 0.78,
+  },
+  historySection: {
+    gap: spacing.sm,
+  },
+  hotSection: {
+    gap: spacing.sm,
+  },
+  sectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.md,
+  },
+  sectionTitle: {
+    color: colors.text,
+    fontSize: fontSize.lg,
+    fontWeight: '900',
+  },
+  textButton: {
+    paddingHorizontal: spacing.xs,
+    paddingVertical: spacing.xs,
+  },
+  textButtonText: {
+    color: colors.primaryDark,
+    fontSize: fontSize.md,
+    fontWeight: '900',
+  },
+  historyList: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+  },
+  historyChip: {
+    maxWidth: '100%',
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.card,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+  },
+  historyText: {
+    color: colors.textMuted,
+    fontSize: fontSize.md,
+    fontWeight: '800',
+  },
+  hotGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+  },
+  hotItem: {
+    minWidth: '30%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    borderRadius: radius.md,
+    backgroundColor: colors.card,
+    borderWidth: 1,
+    borderColor: colors.primarySubtle,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+  },
+  hotText: {
+    flex: 1,
+    color: colors.textMuted,
+    fontSize: fontSize.md,
+    fontWeight: '800',
+  },
+  resultSummary: {
+    color: colors.textMuted,
+    fontSize: fontSize.md,
+    fontWeight: '700',
+  },
+  hint: {
+    color: colors.textSoft,
+    fontSize: fontSize.md,
+    lineHeight: 20,
+  },
+  errorText: {
+    color: colors.danger,
+    fontSize: fontSize.md,
+    lineHeight: 20,
+  },
+  videoRow: {
+    gap: spacing.md,
+    marginBottom: spacing.md,
+  },
+  emptyState: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: spacing.xxl,
+    paddingVertical: 54,
+  },
+  skeletonWrap: {
+    gap: spacing.md,
+    paddingTop: spacing.sm,
+  },
+  emptyTitle: {
+    color: colors.text,
+    fontSize: fontSize.xl,
+    fontWeight: '900',
+  },
+  emptyText: {
+    color: colors.textMuted,
+    fontSize: fontSize.md,
+    lineHeight: 20,
+    marginTop: spacing.sm,
+    textAlign: 'center',
+  },
+});

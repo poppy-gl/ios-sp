@@ -9,6 +9,14 @@ export type VideoServiceContext = {
   signal?: AbortSignal;
 };
 
+export type VideoPageContext = VideoServiceContext & {
+  category?: string;
+  commitToCache?: boolean;
+  cursor?: string;
+  page: number;
+  pageSize?: number;
+};
+
 export type VideoServiceStatus =
   | 'idle'
   | 'ok'
@@ -19,6 +27,7 @@ export type VideoServiceStatus =
 
 export type VideoServiceErrorCode =
   | 'EMPTY_RESULT'
+  | 'BACKEND_UNREACHABLE'
   | 'CRAWL_FAILED'
   | 'PARSE_FAILED'
   | 'POLICY_REJECTED';
@@ -65,10 +74,22 @@ export type VideoServiceState = {
 
 export type VideoPipelineResult = {
   errors: VideoPipelineIssue[];
+  hasMore?: boolean;
   items: VideoItem[];
+  nextCursor?: string;
   source?: ProviderKind;
   stats: VideoPipelineStats;
   status: VideoServiceStatus;
+};
+
+export type VideoPageResult = {
+  hasMore: boolean;
+  items: VideoItem[];
+  mergedItems: VideoItem[];
+  nextCursor?: string;
+  page: number;
+  pageSize: number;
+  source?: ProviderKind;
 };
 
 export type VideoCache = VideoPipelineResult & {

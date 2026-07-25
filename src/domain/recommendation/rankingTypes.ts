@@ -8,6 +8,20 @@ export type RankingInput = {
   id?: string;
   playCount?: number;
   playableInApp?: boolean;
+  playback?: {
+    type?: string;
+    uri?: string;
+  };
+  playbackOptions?: readonly {
+    playableInApp?: boolean;
+    uri?: string;
+  }[];
+  playLines?: readonly {
+    episodes?: readonly {
+      mediaUrl?: string;
+      playPageUrl?: string;
+    }[];
+  }[];
   provider?: string;
   rawCategory?: string;
   source?: string;

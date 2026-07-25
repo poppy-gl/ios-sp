@@ -14,7 +14,8 @@
       }
     },
     "android": {
-      "package": "com.example.iosvideoapp"
+      "package": "com.example.iosvideoapp",
+      "permissions": ["INTERNET"]
     },
     "plugins": ["expo-router", "expo-video"],
     "experiments": {
